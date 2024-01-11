@@ -5,6 +5,7 @@ from typing import Literal, Optional, Tuple, Union
 
 import torch
 from torch import Tensor
+from contextlib import nullcontext
 
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
@@ -17,7 +18,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import make_tp_sharded_tensor_for_checkpoint
-
+from megatron.core.utils import make_sharded_tensor_for_checkpoint, make_viewless_tensor
 
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
@@ -110,6 +111,27 @@ class GPTModel(LanguageModule):
 
         if self.share_embeddings_and_output_weights and (self.pre_process or self.post_process):
             self.initialize_last_stage_with_word_embeddings()
+        if self.decoder.config.fp8:
+            import transformer_engine  # To keep out TE dependency when not training in fp8
+
+            if self.decoder.config.fp8 == "e4m3":
+                fp8_format = transformer_engine.common.recipe.Format.E4M3
+            elif self.decoder.config.fp8 == "hybrid":
+                fp8_format = transformer_engine.common.recipe.Format.HYBRID
+            else:
+                raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
+
+            self.fp8_recipe = transformer_engine.common.recipe.DelayedScaling(
+                margin=self.decoder.config.fp8_margin,
+                interval=self.decoder.config.fp8_interval,
+                fp8_format=fp8_format,
+                amax_compute_algo=self.decoder.config.fp8_amax_compute_algo,
+                amax_history_len=self.decoder.config.fp8_amax_history_len,
+                override_linear_precision=(False, False, not self.decoder.config.fp8_wgrad),
+            )
+            self.fp8_group = None
+            if parallel_state.model_parallel_is_initialized():
+                fp8_group = parallel_state.get_amax_reduction_group(with_context_parallel=False)
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
@@ -165,15 +187,37 @@ class GPTModel(LanguageModule):
             )
             rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
 
-        # Run decoder.
-        hidden_states = self.decoder(
-            hidden_states=decoder_input,
-            attention_mask=attention_mask,
-            inference_params=inference_params,
-            rotary_pos_emb=rotary_pos_emb,
-            packed_seq_params=packed_seq_params,
-            **(extra_block_kwargs or {}),
+        hidden_states = decoder_input
+        if not self.decoder.pre_process:
+            # See set_input_tensor()
+            hidden_states = self.decoder.input_tensor
+        hidden_states = make_viewless_tensor(
+            inp=hidden_states, requires_grad=True, keep_graph=True,
         )
+        if self.config.sequence_parallel:
+            rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
+        else:
+            rng_context = nullcontext()
+
+        if self.decoder.config.fp8:
+            import transformer_engine  # To keep out TE dependency when not training in fp8
+            fp8_context = transformer_engine.pytorch.fp8_autocast(
+                enabled=True, fp8_recipe=self.fp8_recipe, fp8_group=self.fp8_group
+            )
+        else:
+            fp8_context = nullcontext()
+        with fp8_context:# and rng_context:
+            # Run decoder.
+            hidden_states = self.decoder(
+                hidden_states,
+#                attention_mask=attention_mask,
+#                inference_params=inference_params,
+#                rotary_pos_emb=rotary_pos_emb,
+#                **(extra_block_kwargs or {}),
+            )
+        # Final layer norm.
+        if self.decoder.post_process and self.decoder.post_layer_norm:
+            hidden_states = self.decoder.final_layernorm(hidden_states)
 
         if not self.post_process:
             return hidden_states
