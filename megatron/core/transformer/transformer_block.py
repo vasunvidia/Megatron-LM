@@ -359,6 +359,9 @@ class TransformerBlock(MegatronModule):
             )
         else:
             for layer in self.layers:
+                # Trigger pre_forward hook manually for CUDA graph
+                for param in layer.parameters():
+                    param.data_ptr()
                 hidden_states = layer(
                     hidden_states,
 #                    attention_mask=attention_mask,
