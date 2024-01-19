@@ -359,13 +359,13 @@ class TransformerBlock(MegatronModule):
             )
         else:
             for layer in self.layers:
-                hidden_states, context = layer(
-                    hidden_states=hidden_states,
-                    attention_mask=attention_mask,
-                    context=context,
-                    context_mask=context_mask,
-                    rotary_pos_emb=rotary_pos_emb,
-                    inference_params=inference_params,
+                hidden_states = layer(
+                    hidden_states,
+#                    attention_mask=attention_mask,
+#                    context=context,
+#                    context_mask=context_mask,
+#                    rotary_pos_emb=rotary_pos_emb,
+#                    inference_params=inference_params,
                    )
 
         ## Final layer norm.
