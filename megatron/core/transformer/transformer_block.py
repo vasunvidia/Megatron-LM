@@ -70,7 +70,13 @@ def _get_block_submodules(
 
     # Transformer block submodules.
     if isinstance(spec, TransformerBlockSubmodules):
-        return spec
+        if isinstance(spec.layer_specs, list):
+            return spec
+        else:
+            num_layers = get_num_layers_to_build(config)
+            return TransformerBlockSubmodules(
+                layer_specs=[spec.layer_specs] * num_layers
+            )
 
     # ModuleSpec here is generally assumed to be for a transformer layer.
     elif isinstance(spec, ModuleSpec):
