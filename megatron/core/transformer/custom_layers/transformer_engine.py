@@ -137,7 +137,6 @@ class TELinear(te.pytorch.Linear):
         )
 
     def forward(self, x):
-        print("!!! TELinear forward is_first_microbatch:", self.is_first_microbatch)
         out = super().forward(x, is_first_microbatch=self.is_first_microbatch)
         self.is_first_microbatch = False
 
@@ -231,7 +230,6 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
         )
 
     def forward(self, x):
-        print("!!! TELayerNormColumnParallelLinear forward is_first_microbatch:", self.is_first_microbatch)
         out = super().forward(x, is_first_microbatch=self.is_first_microbatch)
         self.is_first_microbatch = False
 
@@ -473,74 +471,6 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             return core_attn_out.transpose(0, 1)
         else:
             return core_attn_out
-
-
-class TETransformerLayer(te.pytorch.TransformerLayer):
-    def __init__(self, config, layer_number=1, hidden_dropout=None):
-        self.config = config
-
-        # covers `params_dtype` and `device` arguments
-        extra_kwargs = _get_extra_te_kwargs(self.config)
-
-        super().__init__(
-            self.config.hidden_size, #: int,
-            self.config.ffn_hidden_size, #: int,
-            self.config.num_attention_heads, #: int,
-            self.config.num_query_groups, #: Optional[int] = None,
-            self.config.layernorm_epsilon, #: float = 1e-5,
-            self.config.hidden_dropout if hidden_dropout is None else hidden_dropout, #: float = 0.1,
-            self.config.attention_dropout, #: float = 0.1,
-            self.config.init_method, #: Optional[Callable] = None,
-            self.config.output_layer_init_method, #: Optional[Callable] = None,
-            layer_number=layer_number, #: Optional[int] = None,
-            kv_channels=self.config.kv_channels, #: Optional[int] = None,
-            #self_attn_mask_type, #: str = "causal",
-            #window_size, #: Optional[Tuple[int, int]] = None,
-            tp_group=get_tensor_model_parallel_group(check_initialized=False), #: Optional[dist_group_type] = None,
-            tp_size=self.config.tensor_model_parallel_size, #: int = 1,
-            get_rng_state_tracker=get_cuda_rng_tracker, #: Optional[Callable] = None,
-            fuse_wgrad_accumulation=self.config.gradient_accumulation_fusion, #: bool = False,
-            #seq_length, #: Optional[int] = None,
-            #micro_batch_size, #: Optional[int] = None,
-            sequence_parallel=self.config.sequence_parallel, #: bool = False,
-            apply_residual_connection_post_layernorm=self.config.apply_residual_connection_post_layernorm, #: bool = False,
-            #output_layernorm, #: bool = False,
-            #parallel_attention_mlp, #: bool = False,
-            #layer_type, #: str = "encoder",
-            #drop_path_rate, #: float = 0.0,
-            #set_parallel_mode, #: bool = False,
-            fuse_qkv_params=True, #: bool = False,
-            #zero_centered_gamma, #: bool = False,
-            #qkv_weight_interleaved, #: bool = True,
-            #ub_tp_comm_overlap, #: bool = False,
-            #bias, #: bool = True,
-            #activation, #: str = 'gelu',
-            normalization=self.config.normalization, #: str = "LayerNorm",
-            #attn_input_format, #: str = "sbhd",
-            **extra_kwargs,
-        )
-
-    def forward(
-        self,
-        hidden_states,
-        attention_mask,
-        context=None,
-        context_mask=None,
-        rotary_pos_emb=None,
-        inference_params=None,
-    ):
-        hidden_states = super().forward(
-            hidden_states,
-            attention_mask=attention_mask,
-            encoder_output=context,
-            enc_dec_attn_mask=context_mask,
-            rotary_pos_emb=rotary_pos_emb,
-            inference_params=inference_params
-        )
-        context = None
-        # TODO @sudhakars: why does TE's TransformerLayer not return any
-        # `context`.
-        return hidden_states, context
 
 
 try:
