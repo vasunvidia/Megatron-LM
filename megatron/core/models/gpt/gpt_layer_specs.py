@@ -9,7 +9,6 @@ from megatron.core.transformer.custom_layers.transformer_engine import (
     TELayerNormColumnParallelLinear,
     TENorm,
     TERowParallelLinear,
-    TETransformerLayer,
 )
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
@@ -19,7 +18,6 @@ from megatron.core.transformer.moe.grouped_mlp import GroupedMLP
 from megatron.core.transformer.moe.switch_mlp import SwitchMLP
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
-from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
 
 
 # Use this spec to use lower level Transformer Engine modules (required for fp8 training)
@@ -103,9 +101,3 @@ def _get_mlp_module_spec(
                 linear_fc1=ColumnParallelLinear, linear_fc2=RowParallelLinear,
             ),
         )
-
-# gpt_full_te_layer_spec = ModuleSpec(module=TETransformerLayer)
-def get_gpt_full_te_layer_spec() -> TransformerBlockSubmodules:
-    return TransformerBlockSubmodules(
-        layer_specs=ModuleSpec(module=TETransformerLayer)
-    )
