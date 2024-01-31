@@ -19,6 +19,7 @@ from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import make_tp_sharded_tensor_for_checkpoint
 from megatron.core.utils import make_sharded_tensor_for_checkpoint, make_viewless_tensor
+from megatron.core import mpu
 
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
@@ -128,11 +129,11 @@ class GPTModel(LanguageModule):
                 amax_compute_algo=self.decoder.config.fp8_amax_compute_algo,
                 amax_history_len=self.decoder.config.fp8_amax_history_len,
                 override_linear_precision=(False, False, not self.decoder.config.fp8_wgrad),
-                reduce_amax=False,
+#                reduce_amax=False,
             )
             self.fp8_group = None
             if parallel_state.model_parallel_is_initialized():
-                fp8_group = parallel_state.get_amax_reduction_group(with_context_parallel=False)
+                self.fp8_group = mpu.get_amax_reduction_group()
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
