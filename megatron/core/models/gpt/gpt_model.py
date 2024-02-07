@@ -129,7 +129,7 @@ class GPTModel(LanguageModule):
                 amax_compute_algo=self.decoder.config.fp8_amax_compute_algo,
                 amax_history_len=self.decoder.config.fp8_amax_history_len,
                 override_linear_precision=(False, False, not self.decoder.config.fp8_wgrad),
-#                reduce_amax=False,
+                reduce_amax=False,
             )
             self.fp8_group = None
             if parallel_state.model_parallel_is_initialized():
