@@ -1194,6 +1194,7 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
+        model.module.decoder.current_microbatch = i
         input_tensor = recv_forward(recv_tensor_shapes, config)
         output_tensor = forward_step(
             forward_step_func,
@@ -1231,7 +1232,7 @@ def forward_backward_pipelining_without_interleaving(
             ) >= config.num_microbatches_with_partial_activation_checkpoints
         else:
             checkpoint_activations_microbatch = None
-
+        model.module.decoder.current_microbatch = i + num_warmup_microbatches
         output_tensor = forward_step(
             forward_step_func,
             data_iterator,

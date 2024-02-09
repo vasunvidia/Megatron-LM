@@ -109,6 +109,8 @@ class TransformerBlock(MegatronModule):
         self.post_layer_norm = post_layer_norm
         self.pre_process = pre_process
         self.post_process = post_process
+        self.cg = {}
+        self.current_microbatch = -1
 
         # required for pipeline parallel schedules
         self.input_tensor = None
@@ -364,11 +366,15 @@ class TransformerBlock(MegatronModule):
                 rotary_pos_emb=rotary_pos_emb,
             )
         else:
-            for layer in self.layers:
+            for l_no, layer in enumerate(self.layers):
                 # Trigger pre_forward hook manually for CUDA graph
                 for param in layer.parameters():
                     param.data_ptr()
-                hidden_states = layer(
+                if (len(self.cg) > l_no) and (self.current_microbatch > 0):
+#                    print (f'CG[{l_no}] count {len(self.cg[l_no])} current microbatch {self.current_microbatch}')
+                    hidden_states = self.cg[l_no][self.current_microbatch](hidden_states)
+                else:
+                    hidden_states = layer(
                     hidden_states,
 #                    attention_mask=attention_mask,
 #                    context=context,
