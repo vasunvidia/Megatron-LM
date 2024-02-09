@@ -371,7 +371,6 @@ class TransformerBlock(MegatronModule):
                 for param in layer.parameters():
                     param.data_ptr()
                 if (len(self.cg) > l_no) and (self.current_microbatch > 0):
-#                    print (f'CG[{l_no}] count {len(self.cg[l_no])} current microbatch {self.current_microbatch}')
                     hidden_states = self.cg[l_no][self.current_microbatch](hidden_states)
                 else:
                     hidden_states = layer(
