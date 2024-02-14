@@ -129,11 +129,9 @@ class GPTModel(LanguageModule):
                 amax_compute_algo=self.decoder.config.fp8_amax_compute_algo,
                 amax_history_len=self.decoder.config.fp8_amax_history_len,
                 override_linear_precision=(False, False, not self.decoder.config.fp8_wgrad),
-                reduce_amax=False,
+#                reduce_amax=False,
             )
             self.fp8_group = None
-            if parallel_state.model_parallel_is_initialized():
-                self.fp8_group = mpu.get_amax_reduction_group()
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
@@ -202,6 +200,9 @@ class GPTModel(LanguageModule):
             rng_context = nullcontext()
 
         if self.decoder.config.fp8:
+            if self.fp8_group is None:
+                if parallel_state.model_parallel_is_initialized():
+                    self.fp8_group = mpu.get_amax_reduction_group()
             import transformer_engine  # To keep out TE dependency when not training in fp8
             fp8_context = transformer_engine.pytorch.fp8_autocast(
                 enabled=True, fp8_recipe=self.fp8_recipe, fp8_group=self.fp8_group

@@ -370,7 +370,7 @@ class TransformerBlock(MegatronModule):
                 # Trigger pre_forward hook manually for CUDA graph
                 for param in layer.parameters():
                     param.data_ptr()
-                if (len(self.cg) > l_no) and (self.current_microbatch > 0):
+                if (len(self.cg) > l_no) and (self.current_microbatch < len(self.cg[l_no])) and (self.current_microbatch > 0):
                     hidden_states = self.cg[l_no][self.current_microbatch](hidden_states)
                 else:
                     hidden_states = layer(
