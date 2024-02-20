@@ -360,7 +360,7 @@ class TransformerBlock(MegatronModule):
                             hidden_states = self.cg[l_no][self.current_microbatch](hidden_states)
                         else:
                             hidden_states = layer(
-                                hidden_states=hidden_states,
+                                hidden_states,
 #                                attention_mask=attention_mask,
 #                                context=context,
 #                                context_mask=context_mask,
