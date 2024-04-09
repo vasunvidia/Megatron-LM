@@ -549,7 +549,7 @@ def forward_backward_pipelining_with_interleaving(
         return model_chunk_id
 
     def get_microbatch_id_in_model_chunk(iteration_id, forward):
-         """Helper method to get the microbatch_id within model chunk given the iteration number."""
+        """Helper method to get the microbatch_id within model chunk given the iteration number."""
         assert forward
         iteration_group_id = iteration_id // (pipeline_parallel_size * num_model_chunks)
         microbatch_id_in_model_chunk = (iteration_group_id * pipeline_parallel_size) + (
