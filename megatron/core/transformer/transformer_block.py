@@ -106,7 +106,7 @@ class TransformerBlock(MegatronModule):
         self.post_layer_norm = post_layer_norm
         self.pre_process = pre_process
         self.post_process = post_process
-        self.cg = {}
+        self.cuda_graphs = {}
         self.current_microbatch = -1
 
         # required for pipeline parallel schedules
@@ -178,15 +178,6 @@ class TransformerBlock(MegatronModule):
                 hidden_size=self.config.hidden_size,
                 eps=self.config.layernorm_epsilon,
             )
-
-    def reset_fp8_meta_tensors(self) -> None:
-        """Set TP group"""
-        # Deep iterate but skip self to avoid infinite recursion.
-        for index, child in enumerate(self.modules()):
-            if index == 0:
-                continue
-            if hasattr(child, "reset_fp8_meta_tensors"):
-                child.reset_fp8_meta_tensors()
 
     def _get_layer(self, layer_number: int):
         return self.layers[layer_number]
@@ -314,6 +305,7 @@ class TransformerBlock(MegatronModule):
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
         is_first_microbatch = None,
+        current_microbatch_id = None,
     ):
         # hidden_states (float): [s, b, h]
         # attention_mask (bool): [1, 1, s, s]
@@ -387,19 +379,26 @@ class TransformerBlock(MegatronModule):
             else:
                 for l_no, layer in enumerate(self.layers):
                     with self.offload_context:
-                        skip_fp8_weight_update = torch.zeros(1, device="cuda")
-                        if (len(self.cg) > l_no) and (self.current_microbatch < len(self.cg[l_no])) and self.training:
-                            hidden_states = self.cg[l_no][self.current_microbatch](hidden_states, is_first_microbatch=(self.current_microbatch==0))
+                        if len(self.cuda_graphs) == 0  or not self.training:
+                            hidden_states, context = layer(
+                                hidden_states=hidden_states,
+                                attention_mask=attention_mask,
+                                context=context,
+                                context_mask=context_mask,
+                                rotary_pos_emb=rotary_pos_emb,
+                                inference_params=inference_params,
+                                packed_seq_params=packed_seq_params,
+                            )
+                            # CUDA graph doesn't output context and is expected to be None
+                            assert (context is None) or (not bool(self.config.cuda_graph))
                         else:
-                            hidden_states = layer(
-                                hidden_states,
-                                is_first_microbatch=(self.current_microbatch==0),
-#                                attention_mask=attention_mask,
-#                                context=context,
-#                                context_mask=context_mask,
-#                                rotary_pos_emb=rotary_pos_emb,
-#                                inference_params=inference_params,
-#                                packed_seq_params=packed_seq_params,
+                            # CUDA graph replay for layer `l_no` and microbatch `self.current_microbatch`
+                            assert (
+                                (len(self.cuda_graphs) > l_no)
+                                and (self.current_microbatch < len(self.cuda_graphs[l_no]))
+                            )
+                            hidden_states = self.cuda_graphs[l_no][self.current_microbatch](
+                                hidden_states, is_first_microbatch=(self.current_microbatch == 0),
                             )
 
                     if (
