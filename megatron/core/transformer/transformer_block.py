@@ -390,7 +390,9 @@ class TransformerBlock(MegatronModule):
                                 packed_seq_params=packed_seq_params,
                             )
                             # CUDA graph doesn't output context and is expected to be None
-                            assert (context is None) or (not bool(self.config.cuda_graph))
+                            assert ((context is None)
+                                or (not self.config.enable_cuda_graph)
+                                or (not self.training))
                         else:
                             # CUDA graph replay for layer `l_no` and microbatch `self.current_microbatch`
                             assert (

@@ -19,6 +19,7 @@ from megatron.core.parallel_state import (
     get_tensor_model_parallel_world_size,
 )
 from megatron.core.utils import safely_set_viewless_tensor_data
+import transformer_engine.pytorch as te
 
 from .utils import gather_split_1d_tensor, split_tensor_into_1d_equal_chunks
 
@@ -153,8 +154,7 @@ class CudaRNGStatesTracker:
 
 
 # RNG tracker object.
-_CUDA_RNG_STATE_TRACKER = CudaRNGStatesTracker()
-
+_CUDA_RNG_STATE_TRACKER = te.distributed.CudaRNGStatesTracker()
 
 def get_cuda_rng_tracker():
     """Get cuda rng tracker."""

@@ -251,7 +251,7 @@ class TransformerConfig(ModelParallelConfig):
     disable_parameter_transpose_cache: bool = False
     """When set to true, the parameter transposes are not cached for subsequent iterations."""
 
-    cuda_graph: bool = False
+    enable_cuda_graph: bool = False
     """When set to true, TransformerLayer blocks are wrapped with CUDA graph."""
 
     # These 2 attributes are WAR for TRTLLM export. DO NOT USE!! WILL BE DEPRECATED SOON!!
