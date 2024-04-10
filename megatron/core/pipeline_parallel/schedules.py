@@ -149,9 +149,12 @@ def custom_backward(output, grad_output):
         accumulate_grad=True,
     )
 
+
 def set_current_microbatch(model, microbatch_id):
-    if hasattr(model.module, 'decoder'):
-        model.module.decoder.current_microbatch = microbatch_id
+    decoder = get_attr_wrapped_model(model, "decoder")
+    assert decoder is not None, "set_current_microbatch requires decoder module"
+    decoder.current_microbatch = microbatch_id
+
 
 def forward_step(
     forward_step_func,
@@ -164,6 +167,7 @@ def forward_step(
     collect_non_loss_data=False,
     checkpoint_activations_microbatch=None,
     is_first_microbatch=False,
+    current_microbatch=None,
 ):
 
     """Forward step for passed-in model.
@@ -177,6 +181,8 @@ def forward_step(
 
     if is_first_microbatch and hasattr(model, 'set_is_first_microbatch'):
         model.set_is_first_microbatch()
+    if current_microbatch is not None:
+        set_current_microbatch(model, current_microbatch)
 
     unwrap_output_tensor = False
     if not isinstance(input_tensor, list):
@@ -356,7 +362,6 @@ def forward_backward_no_pipelining(
     input_tensor, output_tensor_grad = None, None
     with no_sync_func():
         for i in range(num_microbatches - 1):
-            set_current_microbatch(model, i)
             output_tensor = forward_step(
                 forward_step_func,
                 data_iterator,
@@ -367,13 +372,13 @@ def forward_backward_no_pipelining(
                 config,
                 collect_non_loss_data,
                 is_first_microbatch=check_first_val_step(first_val_step, forward_only, i == 0),
+                current_microbatch=i,
             )
             if not forward_only:
                 backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, config)
 
     # Run computation for last microbatch out of context handler (want to
     # synchronize gradients).
-    set_current_microbatch(model, num_microbatches - 1)
     output_tensor = forward_step(
         forward_step_func,
         data_iterator,
@@ -386,6 +391,7 @@ def forward_backward_no_pipelining(
         is_first_microbatch=check_first_val_step(
             first_val_step, forward_only, num_microbatches == 1
         ),
+        current_microbatch=num_microbatches - 1,
     )
 
     if not forward_only:
@@ -579,7 +585,7 @@ def forward_backward_pipelining_with_interleaving(
         else:
             return False
 
-    def forward_step_helper(microbatch_id, checkpoint_activations_microbatch):
+    def forward_step_helper(microbatch_id, current_microbatch, checkpoint_activations_microbatch):
         """Helper method to run forward step with model split into chunks
         (run set_virtual_pipeline_model_parallel_rank() before calling
         forward_step())."""
@@ -622,6 +628,7 @@ def forward_backward_pipelining_with_interleaving(
             check_first_val_step(
                 first_val_step, forward_only, is_first_microbatch_for_model_chunk(microbatch_id),
             ),
+            current_microbatch=current_microbatch,
         )
         output_tensors[model_chunk_id].append(output_tensor)
 
@@ -686,7 +693,6 @@ def forward_backward_pipelining_with_interleaving(
                 req.wait()
 
         cur_model_chunk_id = get_model_chunk_id(k, forward=True)
-        set_current_microbatch(model[cur_model_chunk_id], get_microbatch_id_in_model_chunk(k, forward=True))
         # Decide to checkpoint all layers' activations of the current micro-batch
         if max_outstanding_backprops is not None:
             checkpoint_activations_microbatch = (
@@ -696,7 +702,10 @@ def forward_backward_pipelining_with_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
-        output_tensor = forward_step_helper(k, checkpoint_activations_microbatch)
+        current_microbatch = get_microbatch_id_in_model_chunk(k, forward=True)
+        output_tensor = forward_step_helper(
+            k, current_microbatch, checkpoint_activations_microbatch
+        )
 
         # Determine if tensor should be received from previous stage.
         next_forward_model_chunk_id = get_model_chunk_id(k + 1, forward=True)
@@ -790,7 +799,7 @@ def forward_backward_pipelining_with_interleaving(
             checkpoint_activations_microbatch = None
 
         cur_model_chunk_id = get_model_chunk_id(forward_k, forward=True)
-        set_current_microbatch(model[cur_model_chunk_id], get_microbatch_id_in_model_chunk(forward_k, forward=True))
+        current_microbatch = get_microbatch_id_in_model_chunk(forward_k, forward=True)
         if config.overlap_p2p_comm:
             if fwd_wait_handles is not None:
                 for req in fwd_wait_handles:
@@ -798,7 +807,9 @@ def forward_backward_pipelining_with_interleaving(
 
             deallocate_output_tensor(output_tensor, config.deallocate_pipeline_outputs)
 
-            output_tensor = forward_step_helper(forward_k, checkpoint_activations_microbatch)
+            output_tensor = forward_step_helper(
+                forward_k, current_microbatch, checkpoint_activations_microbatch
+            )
 
             # Determine if current stage has anything to send in either direction,
             # otherwise set tensor to None.
@@ -1225,7 +1236,6 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
-        set_current_microbatch(model, i)
         input_tensor = recv_forward(recv_tensor_shapes, config)
         output_tensor = forward_step(
             forward_step_func,
@@ -1238,6 +1248,7 @@ def forward_backward_pipelining_without_interleaving(
             collect_non_loss_data,
             checkpoint_activations_microbatch,
             check_first_val_step(first_val_step, forward_only, i == 0),
+            current_microbatch=i,
         )
         send_forward(output_tensor, send_tensor_shapes, config)
 
@@ -1264,7 +1275,6 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
-        set_current_microbatch(model, i + num_warmup_microbatches)
         output_tensor = forward_step(
             forward_step_func,
             data_iterator,
@@ -1278,6 +1288,7 @@ def forward_backward_pipelining_without_interleaving(
             check_first_val_step(
                 first_val_step, forward_only, (i == 0) and (num_warmup_microbatches == 0)
             ),
+            current_microbatch=i + num_warmup_microbatches,
         )
 
         if forward_only:

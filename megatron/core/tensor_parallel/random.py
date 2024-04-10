@@ -156,6 +156,7 @@ class CudaRNGStatesTracker:
 # RNG tracker object.
 _CUDA_RNG_STATE_TRACKER = te.distributed.CudaRNGStatesTracker()
 
+
 def get_cuda_rng_tracker():
     """Get cuda rng tracker."""
     return _CUDA_RNG_STATE_TRACKER
