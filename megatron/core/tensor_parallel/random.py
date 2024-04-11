@@ -169,7 +169,7 @@ def initialize_rng_tracker(use_te_rng_tracker: bool = False):
             import transformer_engine.pytorch as te
 
             _te_version = packaging.version.Version(version("transformer-engine"))
-            print (f'initialize_rng_tracker _te_version {_te_version} min_version {packaging.version.Version("1.5.0")}')
+            #print (f'initialize_rng_tracker _te_version {_te_version} min_version {packaging.version.Version("1.5.0")}')
             if _te_version < packaging.version.Version("1.5.0"):
                 raise RuntimeError("use_te_rng_tracker requires TransformerEngine version >= 1.5")
         except:
