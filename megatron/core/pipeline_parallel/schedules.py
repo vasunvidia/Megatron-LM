@@ -151,9 +151,14 @@ def custom_backward(output, grad_output):
 
 
 def set_current_microbatch(model, microbatch_id):
-    decoder = get_attr_wrapped_model(model, "decoder")
-    assert decoder is not None, "set_current_microbatch requires decoder module"
-    decoder.current_microbatch = microbatch_id
+    decoder_exists = True
+    decoder = None
+    try:
+        decoder = get_attr_wrapped_model(model, "decoder")
+    except RuntimeError:
+        decoder_exists = False
+    if decoder_exists and decoder is not None:
+        decoder.current_microbatch = microbatch_id
 
 
 def forward_step(
