@@ -406,10 +406,8 @@ class TransformerBlock(MegatronModule):
                             # CUDA graph requires positional arguments with the exception of is_first_microbatch.
                             # Also CUDA graph accepts only Tensor inputs and outputs. Hence, the arg list and
                             # returned list is limited to `hidden_states`.
-                            assert (len(self.cuda_graphs) > l_no) and (
-                                self.current_microbatch < len(self.cuda_graphs[l_no])
-                            )
-                            hidden_states = self.cuda_graphs[l_no][self.current_microbatch](
+                            cg_index = self.current_microbatch % len(self.cuda_graphs)
+                            hidden_states = self.cuda_graphs[l_no][cg_index](
                                 hidden_states, is_first_microbatch=(self.current_microbatch == 0),
                             )
 
