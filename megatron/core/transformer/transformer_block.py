@@ -1,6 +1,7 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import re
+import os
 import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -386,6 +387,13 @@ class TransformerBlock(MegatronModule):
                 for l_no, layer in enumerate(self.layers):
                     with self.offload_context:
                         if (len(self.cuda_graphs) == 0) or (not self.training):
+                            if os.getenv('DEBUG', '0') == '1':
+                                print (f'TransformerBlock forward layerType {type(layer)} hidden_states {(hidden_states.shape,hidden_states.dtype,hidden_states.requires_grad)}' + \
+                                       f' attention_mask {(None,None) if attention_mask is None else (attention_mask.shape,attention_mask.dtype)}' + \
+                                       f' context {(None,None) if context is None else (context.shape,context.dtype)}' + \
+                                       f' context_mask {(None,None) if context_mask is None else (context_mask.shape,context_mask.dtype)}' + \
+                                       f' rotary_pos_emb {(None,None) if rotary_pos_emb is None else (rotary_pos_emb.shape,rotary_pos_emb.dtype,rotary_pos_emb.requires_grad)} inference_params {inference_params} packed_seq_params {packed_seq_params}')
+
                             hidden_states, context = layer(
                                 hidden_states=hidden_states,
                                 attention_mask=attention_mask,
@@ -395,6 +403,9 @@ class TransformerBlock(MegatronModule):
                                 inference_params=inference_params,
                                 packed_seq_params=packed_seq_params,
                             )
+                            if os.getenv('DEBUG', '0') == '1':
+                                print (f'TransformerBlock forward OUTPUT hidden_states {hidden_states.shape}-{hidden_states.dtype}' + \
+                                       f' context {(None,None) if context is None else (context.shape,context.dtype)}')
                             # CUDA graph doesn't output context and is expected to be None
                             assert (
                                 (context is None)
@@ -406,11 +417,22 @@ class TransformerBlock(MegatronModule):
                             # CUDA graph requires positional arguments with the exception of is_first_microbatch.
                             # Also CUDA graph accepts only Tensor inputs and outputs. Hence, the arg list and
                             # returned list is limited to `hidden_states`.
-                            assert (len(self.cuda_graphs) > l_no) and (
-                                self.current_microbatch < len(self.cuda_graphs[l_no])
-                            )
-                            hidden_states = self.cuda_graphs[l_no][self.current_microbatch](
-                                hidden_states, is_first_microbatch=(self.current_microbatch == 0),
+                            #assert (len(self.cuda_graphs) > l_no) and (
+                            #    self.current_microbatch < len(self.cuda_graphs[l_no])
+                            #)
+                            assert inference_params is None and packed_seq_params is None
+                            optional_cg_args = {}
+                            if attention_mask is not None:
+                                optional_cg_args['attention_mask'] = attention_mask
+                            if context is not None:
+                                optional_cg_args['context'] = context
+                            if context_mask is not None:
+                                optional_cg_args['context_mask'] = context_mask
+                            if rotary_pos_emb is not None:
+                                optional_cg_args['rotary_pos_emb'] = rotary_pos_emb
+                            cg_index = self.current_microbatch % len(self.cuda_graphs[l_no])
+                            hidden_states = self.cuda_graphs[l_no][cg_index](
+                                hidden_states, is_first_microbatch=(self.current_microbatch == 0), optional_args=optional_cg_args,
                             )
 
                     if (

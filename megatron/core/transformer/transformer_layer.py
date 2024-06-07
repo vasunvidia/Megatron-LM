@@ -159,7 +159,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
     def forward(
         self,
         hidden_states,
-        attention_mask,
+        attention_mask=None,
         context=None,
         context_mask=None,
         rotary_pos_emb=None,
@@ -240,6 +240,9 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             inp=hidden_states, requires_grad=hidden_states.requires_grad, keep_graph=True
         )
 
+        # CUDA graph requires returned values to be Tensors
+        if self.config.enable_cuda_graph and self.training:
+            return output
         return output, context
 
     def sharded_state_dict(
