@@ -17,6 +17,16 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+try:
+    from megatron.core.extensions.transformer_engine import (
+        TELayerNormColumnParallelLinear,
+    )
+
+    HAVE_TE = True
+except ImportError:
+    HAVE_TE = False
+print (f'gpt_model.py HAVE_TE {HAVE_TE}')
+
 
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
@@ -137,18 +147,23 @@ class GPTModel(LanguageModule):
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
 
-            self.output_layer = tensor_parallel.ColumnParallelLinear(
+            print (f'self.embedding_activation_buffer {self.embedding_activation_buffer} grad_output_buffer {self.grad_output_buffer} share_embeddings_and_output_weights {self.share_embeddings_and_output_weights} skip_weight_param_allocation {self.pre_process and self.share_embeddings_and_output_weights}')
+#            self.output_layer = tensor_parallel.ColumnParallelLinear(
+            assert self.embedding_activation_buffer is None and self.grad_output_buffer is None
+            self.output_layer = TELayerNormColumnParallelLinear(#tensor_parallel.ColumnParallelLinear(
                 config.hidden_size,
                 self.vocab_size,
                 config=config,
                 init_method=config.init_method,
                 bias=False,
                 skip_bias_add=False,
+                is_expert=False,
                 gather_output=not self.parallel_output,
                 skip_weight_param_allocation=self.pre_process
                 and self.share_embeddings_and_output_weights,
-                embedding_activation_buffer=self.embedding_activation_buffer,
-                grad_output_buffer=self.grad_output_buffer,
+#                embedding_activation_buffer=self.embedding_activation_buffer,
+#                grad_output_buffer=self.grad_output_buffer,
+                tp_comm_buffer_name='logit_proj',
             )
 
         if self.pre_process or self.post_process:
@@ -230,7 +245,9 @@ class GPTModel(LanguageModule):
         output_weight = None
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
-        logits, _ = self.output_layer(hidden_states, weight=output_weight)
+#        print (f'output_layer weight {output_weight}')
+        assert output_weight is None
+        logits, _ = self.output_layer(hidden_states)#, weight=output_weight)
 
         if has_config_logger_enabled(self.config):
             payload = OrderedDict(
