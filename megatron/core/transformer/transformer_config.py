@@ -319,6 +319,9 @@ class TransformerConfig(ModelParallelConfig):
     external_cuda_graph: bool = False
     """When set to true, TransformerLayer layers are swapped with user provided CUDA graphs."""
 
+    te_logit_proj: bool = False
+    """When set to true, output_layer uses TE LayerNormLinear layer instead of ColumnParallelLinear."""
+
     config_logger_dir: str = ""
     """When non-empty, dumps entry-point configs to config_logger_dir"""
 

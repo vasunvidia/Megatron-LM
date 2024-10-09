@@ -252,10 +252,10 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
         if is_expert:
             raise ValueError('Transformer Engine linear layers do not yet support MoE')
 
-        if skip_weight_param_allocation:
-            raise ValueError(
-                'Transformer Engine linear layers do not support skip_weight_param_allocation'
-            )
+        #if skip_weight_param_allocation:
+        #    raise ValueError(
+        #        'Transformer Engine linear layers do not support skip_weight_param_allocation'
+        #    )
 
         # TE returns a zero length Tensor when bias=False and
         # return_bias=True, but we prefer None.  So in that case we
@@ -325,15 +325,16 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
             parallel_mode="column",
             return_layernorm_output=False,
             zero_centered_gamma=self.config.layernorm_zero_centered_gamma,
+            skip_weight_alloc=skip_weight_param_allocation,
             **extra_kwargs,
         )
 
-    def forward(self, x):
+    def forward(self, x, weight=None):
         """Forward."""
         _is_first_microbatch = (
             None if self.disable_parameter_transpose_cache else self.is_first_microbatch
         )
-        out = super().forward(x, is_first_microbatch=_is_first_microbatch)
+        out = super().forward(x, weight=weight, is_first_microbatch=_is_first_microbatch)
         self.is_first_microbatch = False
 
         # TE only returns a tuple when return_bias is True, otherwise

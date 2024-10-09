@@ -85,7 +85,6 @@ class GPTModel(LanguageModule):
 
         if has_config_logger_enabled(config):
             log_config_to_disk(config, locals(), prefix=type(self).__name__)
-
         self.transformer_layer_spec: ModuleSpec = transformer_layer_spec
         self.vocab_size = vocab_size
         self.max_sequence_length = max_sequence_length
@@ -127,7 +126,7 @@ class GPTModel(LanguageModule):
             config=self.config,
             spec=transformer_layer_spec,
             pre_process=self.pre_process,
-            post_process=self.post_process,
+            post_process=self.post_process and not self.config.te_logit_proj,
         )
 
         # Output
@@ -147,24 +146,33 @@ class GPTModel(LanguageModule):
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
 
-            print (f'self.embedding_activation_buffer {self.embedding_activation_buffer} grad_output_buffer {self.grad_output_buffer} share_embeddings_and_output_weights {self.share_embeddings_and_output_weights} skip_weight_param_allocation {self.pre_process and self.share_embeddings_and_output_weights}')
-#            self.output_layer = tensor_parallel.ColumnParallelLinear(
-            assert self.embedding_activation_buffer is None and self.grad_output_buffer is None
-            self.output_layer = TELayerNormColumnParallelLinear(#tensor_parallel.ColumnParallelLinear(
-                config.hidden_size,
-                self.vocab_size,
-                config=config,
-                init_method=config.init_method,
-                bias=False,
-                skip_bias_add=False,
-                is_expert=False,
-                gather_output=not self.parallel_output,
-                skip_weight_param_allocation=self.pre_process
+#            import pdb; pdb.set_trace()
+            kwargs = {
+                'config': config,
+                'init_method': config.init_method,
+                'bias': False,
+                'skip_bias_add': False,
+                'gather_output': not self.parallel_output,
+                'skip_weight_param_allocation': self.pre_process
                 and self.share_embeddings_and_output_weights,
-#                embedding_activation_buffer=self.embedding_activation_buffer,
-#                grad_output_buffer=self.grad_output_buffer,
-                tp_comm_buffer_name='logit_proj',
-            )
+            }
+            if self.config.te_logit_proj:
+                assert self.embedding_activation_buffer is None and self.grad_output_buffer is None
+                kwargs['is_expert'] = False
+                kwargs['tp_comm_buffer_name'] = 'logit_proj'
+                self.output_layer = TELayerNormColumnParallelLinear(
+                    config.hidden_size,
+                    self.vocab_size,
+                    **kwargs)
+            else:
+                kwargs['embedding_activation_buffer'] = self.embedding_activation_buffer
+                kwargs['grad_output_buffer'] = self.grad_output_buffer
+                self.output_layer = tensor_parallel.ColumnParallelLinear(
+                    config.hidden_size,
+                    self.vocab_size,
+                    **kwargs)
+            print (f'!!! skip_weight_param_allocation {self.pre_process}')
+            #assert False
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
@@ -245,9 +253,9 @@ class GPTModel(LanguageModule):
         output_weight = None
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
-#        print (f'output_layer weight {output_weight}')
-        assert output_weight is None
-        logits, _ = self.output_layer(hidden_states)#, weight=output_weight)
+#        print (f'output_layer weight requires_grad {output_weight.requires_grad}')
+#        assert output_weight is None
+        logits, _ = self.output_layer(hidden_states, weight=output_weight)
 
         if has_config_logger_enabled(self.config):
             payload = OrderedDict(
