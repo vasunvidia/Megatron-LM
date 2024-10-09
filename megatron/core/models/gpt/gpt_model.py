@@ -20,6 +20,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 try:
     from megatron.core.extensions.transformer_engine import (
         TELayerNormColumnParallelLinear,
+        te,
     )
 
     HAVE_TE = True
@@ -158,12 +159,14 @@ class GPTModel(LanguageModule):
             }
             if self.config.te_logit_proj:
                 assert self.embedding_activation_buffer is None and self.grad_output_buffer is None
+                assert HAVE_TE
                 kwargs['is_expert'] = False
                 kwargs['tp_comm_buffer_name'] = 'logit_proj'
-                self.output_layer = TELayerNormColumnParallelLinear(
-                    config.hidden_size,
-                    self.vocab_size,
-                    **kwargs)
+                with te.pytorch.fp8_model_init(enabled=False):
+                    self.output_layer = TELayerNormColumnParallelLinear(
+                        config.hidden_size,
+                        self.vocab_size,
+                        **kwargs)
             else:
                 kwargs['embedding_activation_buffer'] = self.embedding_activation_buffer
                 kwargs['grad_output_buffer'] = self.grad_output_buffer
@@ -251,10 +254,10 @@ class GPTModel(LanguageModule):
 
         # logits and loss
         output_weight = None
-        if self.share_embeddings_and_output_weights:
+        if self.share_embeddings_and_output_weights and (
+            not self.config.te_logit_proj or self.pre_process
+        ):
             output_weight = self.shared_embedding_or_output_weight()
-#        print (f'output_layer weight requires_grad {output_weight.requires_grad}')
-#        assert output_weight is None
         logits, _ = self.output_layer(hidden_states, weight=output_weight)
 
         if has_config_logger_enabled(self.config):
