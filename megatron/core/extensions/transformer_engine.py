@@ -243,6 +243,7 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
         is_expert: bool,
         skip_weight_param_allocation: bool = False,
         tp_comm_buffer_name: str = None,
+        normalization: str = None,
     ):
         self.config = config
 
@@ -269,7 +270,7 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
 
         # Only Transformer-Engine version >= 0.11.0 supports `RMSNorm`
         if _te_version >= packaging.version.Version("0.11.0"):
-            extra_kwargs["normalization"] = self.config.normalization
+            extra_kwargs["normalization"] = self.config.normalization if normalization is None else normalization
         elif self.config.normalization != "LayerNorm":
             raise ValueError(
                 f"Transformer Engine v{_te_version} does not support {self.config.normalization}."

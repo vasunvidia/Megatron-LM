@@ -122,12 +122,13 @@ class GPTModel(LanguageModule):
                 use_cpu_initialization=self.config.use_cpu_initialization,
             )
 
+        NO_LN_TELAYER = True
         # Transformer.
         self.decoder = TransformerBlock(
             config=self.config,
             spec=transformer_layer_spec,
             pre_process=self.pre_process,
-            post_process=self.post_process and not self.config.te_logit_proj,
+            post_process=self.post_process and (not self.config.te_logit_proj or NO_LN_TELAYER),
         )
 
         # Output
@@ -162,6 +163,7 @@ class GPTModel(LanguageModule):
                 assert HAVE_TE
                 kwargs['is_expert'] = False
                 kwargs['tp_comm_buffer_name'] = 'logit_proj'
+                kwargs['normalization'] = 'None' if NO_LN_TELAYER else 'LayerNorm'
                 with te.pytorch.fp8_model_init(enabled=False):
                     self.output_layer = TELayerNormColumnParallelLinear(
                         config.hidden_size,
@@ -174,8 +176,6 @@ class GPTModel(LanguageModule):
                     config.hidden_size,
                     self.vocab_size,
                     **kwargs)
-            print (f'!!! skip_weight_param_allocation {self.pre_process}')
-            #assert False
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
@@ -184,6 +184,7 @@ class GPTModel(LanguageModule):
             log_config_to_disk(
                 self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
             )
+
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
@@ -299,9 +300,9 @@ class GPTModel(LanguageModule):
 
         # Old GPT checkpoints only stored the output layer weight key. So we remove the
         # _extra_state key but check that it doesn't contain any data anyway
-        output_extra_state = sharded_state_dict.pop(output_layer_extra_state_key, None)
-        assert not (
-            output_extra_state and output_extra_state.data
-        ), f'Expected output layer extra state to be empty, got: {output_extra_state}'
+        #output_extra_state = sharded_state_dict.pop(output_layer_extra_state_key, None)
+        #assert not (
+        #    output_extra_state and output_extra_state.data
+        #), f'Expected output layer extra state to be empty, got: {output_extra_state}'
 
         return sharded_state_dict
