@@ -641,6 +641,13 @@ def validate_args(args, defaults={}):
                 print('accumulate and all-reduce gradients in fp32 for '
                       'bfloat16 data type.', flush=True)
 
+    if args.full_cuda_graph:
+        args.check_for_nan_in_loss_and_grad = False
+        if args.rank == 0:
+            print('WARNING: Setting args.check_for_nan_in_loss_and_grad to False since '
+                  'full CUDA graph is being used')
+
+
     if args.rank == 0:
         print('using {} for parameters ...'.format(args.params_dtype),
               flush=True)
@@ -1191,6 +1198,8 @@ def _add_inference_args(parser):
     group.add_argument('--external-cuda-graph', action='store_true',
                        help='Use CUDA graph capture and replay. The CUDA graphs are'
                        'manually captured in the training script.')
+    group.add_argument('--full-cuda-graph', action='store_true',
+                       help='Use full iteration CUDA graph capture and replay.')
     group.add_argument('--cuda-graph-scope', type=str, default='full',
                        choices=['full', 'attn'],
                        help='Determines the CUDA graphs capturing scope. Valid values are '

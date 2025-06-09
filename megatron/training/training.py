@@ -50,6 +50,7 @@ from megatron.core.fp8_utils import correct_amax_history_if_needed
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.checkpointing import checkpoint_exists
+from megatron.training.full_cuda_graph import FullCGWrapper
 from megatron.core.transformer.module import Float16Module
 from megatron.core.distributed import DistributedDataParallelConfig, TorchFullyShardedDataParallelConfig
 from megatron.core.distributed import DistributedDataParallel as DDP
@@ -828,6 +829,7 @@ def pretrain(
             build_train_valid_test_data_iterators(train_valid_test_dataset_provider)
         )
     timers('train/valid/test-data-iterators-setup').stop()
+    print (f'Vasu After Dataloader')
     print_datetime('after dataloaders are built')
     app_metrics['app_build_dataiters_finish_time'] = one_logger_utils.get_timestamp_in_ms()
 
@@ -1128,18 +1130,19 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             if not ddp_config.overlap_grad_reduce:
                 ddp_config.bucket_size = None
 
-        model = [
-            DP(
-                config=config,
-                ddp_config=ddp_config,
-                module=model_chunk,
-                # Turn off bucketing for model_chunk 2 onwards, since communication for these
-                # model chunks is overlapped with compute anyway.
-                disable_bucketing=(model_chunk_idx > 0)
-                or args.overlap_param_gather_with_optimizer_step,
-            )
-            for (model_chunk_idx, model_chunk) in enumerate(model)
-        ]
+        with torch.cuda.stream(torch.cuda.Stream()):
+            model = [
+                DP(
+                    config=config,
+                    ddp_config=ddp_config,
+                    module=model_chunk,
+                    # Turn off bucketing for model_chunk 2 onwards, since communication for these
+                    # model chunks is overlapped with compute anyway.
+                    disable_bucketing=(model_chunk_idx > 0)
+                    or args.overlap_param_gather_with_optimizer_step,
+                )
+                for (model_chunk_idx, model_chunk) in enumerate(model)
+            ]
 
         # Broadcast params from data parallel src rank to other data parallel ranks.
         if args.data_parallel_random_init:
@@ -1344,7 +1347,7 @@ def dummy_train_step(data_iterator):
         batch = get_batch_on_this_cp_rank(batch)
 
 
-def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config):
+def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func):
     """Single training step."""
     args = get_args()
     timers = get_timers()
@@ -1378,7 +1381,7 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
             adjust_tensor_shapes_fn = None
 
         # Forward pass.
-        forward_backward_func = get_forward_backward_func()
+        #forward_backward_func = get_forward_backward_func()
         losses_reduced = forward_backward_func(
             forward_step_func=forward_step_func,
             data_iterator=data_iterator,
@@ -2106,6 +2109,10 @@ def train(
     num_microbatches = get_num_microbatches()
     eval_duration = 0.0
     eval_iterations = 0
+    # Wrap forward_backward_func for Full iteration CUDA graph Vasu
+    forward_backward_func = get_forward_backward_func()
+    if args.full_cuda_graph:
+        forward_backward_func = FullCGWrapper(forward_backward_func, cuda_graph_warmup_iters=11)
 
     def get_e2e_base_metrics():
         """Get base metrics values for one-logger to calculate E2E tracking metrics."""
@@ -2218,6 +2225,7 @@ def train(
         # Run training step.
         args.curr_iteration = iteration
         ft_integration.on_training_step_start()
+        print (f'Vasu train_step curr_iteration {args.curr_iteration}')
         (
             loss_dict,
             skipped_iter,
@@ -2227,7 +2235,7 @@ def train(
             grad_norm,
             num_zeros_in_grad,
         ) = train_step(
-            forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config
+            forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func
         )
         ft_integration.on_training_step_end()
         if should_checkpoint:
