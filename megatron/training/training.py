@@ -2112,7 +2112,7 @@ def train(
     # Wrap forward_backward_func for Full iteration CUDA graph Vasu
     forward_backward_func = get_forward_backward_func()
     if args.full_cuda_graph:
-        forward_backward_func = FullCGWrapper(forward_backward_func, cuda_graph_warmup_iters=11)
+        forward_backward_func = FullCGWrapper(forward_backward_func)
 
     def get_e2e_base_metrics():
         """Get base metrics values for one-logger to calculate E2E tracking metrics."""
@@ -2225,7 +2225,6 @@ def train(
         # Run training step.
         args.curr_iteration = iteration
         ft_integration.on_training_step_start()
-        print (f'Vasu train_step curr_iteration {args.curr_iteration}')
         (
             loss_dict,
             skipped_iter,
@@ -2442,6 +2441,10 @@ def evaluate(
     eval_batch_size = args.global_batch_size
     eval_num_microbatches = eval_batch_size // (args.micro_batch_size * args.data_parallel_size)
 
+    forward_backward_func = get_forward_backward_func()
+    if args.full_cuda_graph:
+        forward_backward_func = FullCGWrapper(forward_backward_func)
+
     with torch.no_grad():
         iteration = 0
         if verbose:
@@ -2451,7 +2454,6 @@ def evaluate(
             if verbose:
                 print_rank_0(f'Evaluating iter {iteration}/{args.eval_iters}')
 
-            forward_backward_func = get_forward_backward_func()
             # Don't care about timing during evaluation
             config.timers = None
             ft_integration.on_eval_step_start()

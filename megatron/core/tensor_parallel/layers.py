@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
+from transformer_engine.pytorch.module.base import get_dummy_wgrad
 from megatron.core.model_parallel_config import ModelParallelConfig
 from megatron.core.parallel_state import (
     get_global_memory_buffer,
@@ -541,19 +542,9 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
                 # dummy grad_weight tensor to prevent backward hooks from being run
                 # in a background thread.
                 if getattr(weight, 'zero_out_wgrad', False):
-                    grad_weight = torch.zeros(
-                        weight.main_grad.shape,
-                        dtype=input.dtype,
-                        device=torch.cuda.current_device(),
-                        requires_grad=False,
-                    )
+                    grad_weight = get_dummy_wgrad(list(weight.main_grad.shape), input.dtype, zero=True)
                 else:
-                    grad_weight = torch.empty(
-                        weight.main_grad.shape,
-                        dtype=input.dtype,
-                        device=torch.cuda.current_device(),
-                        requires_grad=False,
-                    )
+                    grad_weight = get_dummy_wgrad(list(weight.main_grad.shape), input.dtype)
                 weight.grad_added_to_main_grad = True
             else:
                 grad_weight = None

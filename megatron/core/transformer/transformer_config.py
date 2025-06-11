@@ -498,6 +498,9 @@ class TransformerConfig(ModelParallelConfig):
     ##################
     # Cuda Graphs
     ##################
+    full_cuda_graph: bool = False
+    """When set to true, whole FPROP+BPROP CUDA graph."""
+
     enable_cuda_graph: bool = False
     """When set to true, TransformerLayer layers are swapped with a CUDA graphed version."""
 
