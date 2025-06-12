@@ -1759,7 +1759,7 @@ def get_batch_on_this_cp_rank(batch: Dict[str, Any]):
                     val.shape[seq_dim] // (2 * cp_size),
                     *val.shape[(seq_dim + 1) :],
                 )
-                index = torch.zeros(2, dtype=torch.int64, device=_val.device)
+                index = torch.zeros(2, dtype=torch.int64, device=val.device)
                 index[0].fill_(cp_rank)
                 index[1].fill_(2 * cp_size - cp_rank - 1)
                 val = val.index_select(seq_dim, index)
