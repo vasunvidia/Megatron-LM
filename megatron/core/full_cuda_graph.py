@@ -7,6 +7,9 @@ import logging
 import torch
 
 from megatron.core.tensor_parallel.random import get_all_rng_states
+from megatron.core.pipeline_parallel.moe_packed_offload import (
+    packed_moe_expert_offloading_reset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +101,11 @@ class FullCudaGraphWrapper:
     cuda_graph = {'training': None, 'validation': None}
     result = {'training': None, 'validation': None}
 
-    def __init__(self, forward_backward_func, cuda_graph_warmup_steps=1):
+    def __init__(self, forward_backward_func, cuda_graph_warmup_steps=1, packed_moe_expert_offloading=False):
         self.forward_backward_func = forward_backward_func
         self.static_loader = StaticBufferLoader()
         self.cuda_graph_warmup_steps = cuda_graph_warmup_steps
+        self.packed_moe_expert_offloading = packed_moe_expert_offloading
 
     def data_read(self, data_iterator, model, training, num_microbatches):
         """Read all microbatch inputs from Dataloader and copy to static buffers."""
@@ -161,7 +165,7 @@ class FullCudaGraphWrapper:
         training_str = 'training' if training else 'validation'
         curr_iteration = self.curr_iter(training_str)
         if curr_iteration == self.cuda_graph_warmup_steps:
-            logger.info(f'Capture CUDA graph for {training_str}!!!')
+            print(f'Capture CUDA graph for {training_str}!!!')
             torch.distributed.barrier()
             assert FullCudaGraphWrapper.cuda_graph[training_str] is None
             FullCudaGraphWrapper.cuda_graph[training_str] = torch.cuda.CUDAGraph()
@@ -184,10 +188,24 @@ class FullCudaGraphWrapper:
         if FullCudaGraphWrapper.cuda_graph[training_str] is None:
             FullCudaGraphWrapper.result[training_str] = self.forward_backward_func(*args, **kwargs)
         else:
+            packed_moe_expert_offloading_reset(enabled=self.packed_moe_expert_offloading and training)
             FullCudaGraphWrapper.cuda_graph[training_str].replay()
-
+        self.speculative_cuda_graph_check(model)
         self.next_iter(training_str)
         return FullCudaGraphWrapper.result[training_str]
+
+    def speculative_cuda_graph_check(self, model):
+        ''' check speculative execution modules '''
+        if self.packed_moe_expert_offloading:
+            # Check if there is any overflow in the receiving buffer
+            over_budget = torch.zeros(1, dtype=torch.bool, device='cuda')
+            for model_chunk in model:
+                for layer in model_chunk.module.module.decoder.layers:
+                    mlp = layer.mlp
+                    if hasattr(mlp, 'token_dispatcher') and hasattr(mlp.token_dispatcher, 'check_over_budget'):
+                        over_budget |= mlp.token_dispatcher.check_over_budget()
+            if over_budget.item():
+                raise Exception(f"Rank {torch.distributed.get_rank()} overbudget")
 
     def curr_iter(self, stage):
         """Return current training/validation iteration."""

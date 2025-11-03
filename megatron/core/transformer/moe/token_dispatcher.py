@@ -33,6 +33,7 @@ from megatron.core.transformer.moe.moe_utils import (
     permute,
     sort_chunks_by_idxs,
     unpermute,
+    drop_routing_map_triton,
 )
 from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -76,6 +77,7 @@ class MoETokenDispatcher:
         self.tp_size = utils.get_pg_size(self.tp_group)
         self.tp_rank = utils.get_pg_rank(self.tp_group)
         self.ep_size = utils.get_pg_size(self.ep_group)
+        self.ep_rank = utils.get_pg_rank(self.ep_group)
 
         # Attributes that need to be captured in cudagraph. These attributes are returned
         # as cudagraph outputs when the cuda_graph_scope contains moe_preprocess.
@@ -983,11 +985,8 @@ class _HybridEPManager(_DispatchManager):
         if self.drop_and_pad:
             assert self.capacity_factor is not None
         self.capacity = None
-        # The up-bound for the number of tokens after dispatch op, -1 means no up-bound,
-        # which will cause a CPU sync
-        self.num_dispatched_tokens = None
-        # Actually the sum of tokens_per_expert, the up-bound for the number of tokens
-        # after permute op, -1 means no up-bound, will cause a CPU sync
+        # Actually the the up-bound for the number of tokens
+        # after permute op, None means no up-bound, will cause a CPU sync
         self.num_permuted_tokens = None
 
         # Metadata
@@ -1003,10 +1002,19 @@ class _HybridEPManager(_DispatchManager):
                 "https://github.com/deepseek-ai/DeepEP/tree/hybrid-ep."
             )
 
+        self.packed_offloading_capacity_factor = self.config.moe_expert_capacity_factor_for_packed_offloading
+        self.over_budget = torch.zeros(1, dtype=torch.bool, device='cuda')
+
     def setup_metadata(self, routing_map: torch.Tensor, probs: torch.Tensor):
         num_tokens = routing_map.shape[0]
         self.routing_map = routing_map.reshape(num_tokens, self.num_experts)
         self.token_probs = probs.reshape(num_tokens, self.num_experts)
+
+        if self.packed_offloading_capacity_factor is not None:
+            pad_multiple = get_fp8_align_size(self.config.fp8_recipe)
+            budget = int(routing_map.shape[0] * self.config.moe_router_topk  * self.packed_offloading_capacity_factor)
+            budget += -budget % pad_multiple
+            self.num_permuted_tokens = budget
         # Compute the capacity for each expert at the drop_and_pad mode
         if self.drop_and_pad:
             num_out_tokens = num_tokens * self.config.moe_router_topk
@@ -1016,12 +1024,9 @@ class _HybridEPManager(_DispatchManager):
                 num_experts=self.num_experts,
                 capacity_factor=self.capacity_factor,
             )
-            # We cannot predict the actual number of tokens after the dispatch op,
-            # so we set it to the worst case in drop_and_pad mode
-            self.num_dispatched_tokens = self.capacity * self.group.size() * self.num_local_experts
             # In drop_and_pad mode, the number of tokens after the permute op
             # can be computed on the CPU
-            self.num_permuted_tokens = self.num_dispatched_tokens
+            self.num_permuted_tokens = self.capacity * self.group.size() * self.num_local_experts
             self.tokens_per_expert = torch.full(
                 (self.num_local_experts,), self.capacity * self.group.size(), dtype=torch.long
             )
@@ -1050,17 +1055,20 @@ class _HybridEPManager(_DispatchManager):
                 num_local_experts=self.num_local_experts,
                 num_sms_dispatch_api=self.config.moe_hybridep_num_sms,
                 num_sms_combine_api=self.config.moe_hybridep_num_sms,
-                num_dispatched_tokens=self.num_dispatched_tokens,
                 num_permuted_tokens=self.num_permuted_tokens,
                 pad_multiple=self.pad_multiple,
             )
         )
+        if self.packed_offloading_capacity_factor is not None:
+            over_budget = self.handle[8] != 0 # this is overflow_flag
+            self.over_budget |= over_budget
 
-        if not self.drop_and_pad:
-            self.tokens_per_expert = tokens_per_expert
+        if self.num_permuted_tokens is None:
+            self.tokens_per_expert = tokens_per_expert.to(torch.int64)
             # self.num_permuted_tokens is necessary to allocate the output tensor for permute
             self.num_permuted_tokens = self.tokens_per_expert.sum()
-
+        if self.config.moe_expert_capacity_factor_for_packed_offloading is not None:
+            self.tokens_per_expert = tokens_per_expert.to(torch.int64)
         return dispatched_hidden
 
     def combine(
@@ -1072,7 +1080,6 @@ class _HybridEPManager(_DispatchManager):
         hidden_states = hybrid_ep_combine(
             x=hidden_states,
             handle=self.handle,
-            num_dispatched_tokens=self.num_dispatched_tokens,
             num_permuted_tokens=self.num_permuted_tokens,
             pad_multiple=self.pad_multiple,
         )
@@ -1409,9 +1416,9 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
             .expand(-1, -1, self.tp_size, -1)
             .reshape(num_local_tokens, world_size, self.num_local_experts)
         ).contiguous()
+
         return routing_map, probs
 
-    @jit_fuser
     def dispatch_preprocess(
         self, hidden_states: torch.Tensor, routing_map: torch.Tensor, probs: torch.Tensor
     ):
@@ -1436,6 +1443,7 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
         routing_map, probs = self._initialize_metadata(routing_map, probs)
 
         self._comm_manager.setup_metadata(routing_map, probs)
+        
         return hidden_states, self._comm_manager.token_probs
 
     def token_dispatch(
@@ -1529,3 +1537,9 @@ class MoEFlexTokenDispatcher(MoETokenDispatcher):
             The final MoE layer output reshaped to its original dimensions.
         """
         return hidden_states.view(self.hidden_shape)
+
+    def check_over_budget(self):
+        if hasattr(self._comm_manager, 'over_budget'):
+            return self._comm_manager.over_budget
+        else:
+            return None
