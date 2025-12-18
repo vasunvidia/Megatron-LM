@@ -1248,12 +1248,12 @@ def validate_args(args, defaults={}):
         if is_te_min_version("2.10.0"):
             assert os.getenv("NVTE_CPU_OFFLOAD_V1", "0") == "1", \
                 "For fine-grained activation offloading with TE >= 2.10.0, NVTE_CPU_OFFLOAD_V1 should be set to 1 to avoid offloading weights."
-        assert not args.packed_moe_expert_offloading, "Fine-grained activation offloading and packed moe expert offloading cannot be enabled at the same time"
+        assert not args.moe_paged_stash, "Fine-grained activation offloading and paged stash cannot be enabled at the same time"
 
-    if args.packed_moe_expert_offloading:
+    if args.moe_paged_stash:
         assert args.transformer_impl == 'transformer_engine', \
-            "Packed moe expert offloading is only supported with transformer_engine implementation"
-        assert not args.fine_grained_activation_offloading, "Packed moe expert offloading and fine-grained activation offloading cannot be enabled at the same time"
+            "Paged stash is only supported with transformer_engine implementation"
+        assert not args.fine_grained_activation_offloading, "Paged stash and fine-grained activation offloading cannot be enabled at the same time"
 
     if args.mtp_num_layers:
         assert not args.use_legacy_models, "The legacy Megatron models does not support Multi-Token Prediction (MTP)."
@@ -2135,8 +2135,8 @@ def _add_training_args(parser):
                        help='Use the legacy Megatron models, not Megatron-Core models.')
     group.add_argument('--high-priority-stream-groups', nargs='*', type=str, default=[],
                        help='The communicator group names to use high priority streams.')
-    group.add_argument('--packed-moe-expert-offloading', action='store_true',
-                       help='Enable packed moe expert offloading.')
+    group.add_argument('--moe-paged-stash', action='store_true',
+                       help='Enable paged stash for MoE expert activations.')
     group.add_argument('--offload-modules', nargs='*', type=str, default=[],
                        help='The submodules to offload its input. Choices: "attn_norm", "qkv_linear", "core_attn", "attn_proj", "mlp_norm", "expert_fc1", "moe_act".')
     group.add_argument('--disable-jit-fuser', action='store_true',

@@ -914,8 +914,8 @@ class TransformerConfig(ModelParallelConfig):
     instead of a layer-level offloading method like cpu_offloading."""
 
     offload_modules: Optional[list[str]] = field(default_factory=list)
-    packed_moe_expert_offloading: bool = False
-    """If True, enable packed moe expert offloading."""
+    moe_paged_stash: bool = False
+    """If True, enable paged stash for MoE expert activations."""
 
     """The submodules to offload its input.
     choices: "attn_norm", "qkv_linear", "core_attn", "attn_proj",
@@ -1326,10 +1326,10 @@ class TransformerConfig(ModelParallelConfig):
                     "because the input of attn_proj is the output of core_attn, "
                     "which is needed in core_attn.backward()."
                 )
-        if self.packed_moe_expert_offloading:
+        if self.moe_paged_stash:
             assert (
                 not self.cpu_offloading and not self.fine_grained_activation_offloading
-            ), "packed_moe_expert_offloading cannot be enabled with cpu_offloading."
+            ), "paged_stash cannot be enabled with cpu_offloading."
             assert self.offload_modules is not None and len(self.offload_modules) > 0
             allowed_modules = {"expert_fc1", "expert_fc2", "moe_act"}
             invalid_modules = set(self.offload_modules) - allowed_modules
