@@ -11,15 +11,13 @@ from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     fine_grained_offloading_set_last_layer,
 )
-from megatron.core.transformer.moe.paged_stash import (
-    paged_stash_set_last_layer,
-)
 from megatron.core.pipeline_parallel.utils import (
     AbstractSchedulePlan,
     NoopScheduleNode,
     get_comm_stream,
     get_comp_stream,
 )
+from megatron.core.transformer.moe.paged_stash import paged_stash_set_last_layer
 
 
 class ModelChunkState:
