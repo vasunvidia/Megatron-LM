@@ -168,7 +168,7 @@ class GraphableMegatronModule(MegatronModule):
         assert isinstance(config, TransformerConfig), "config must be a TransformerConfig"
 
         # Enable cuda graphs.
-        if config.cuda_graph_impl == "local" and "full_iteration" not in config.cuda_graph_scope:
+        if config.cuda_graph_impl == "local":
             if hasattr(self, "create_mcore_cudagraph_manager"):
                 self.create_mcore_cudagraph_manager(config)
             else:
