@@ -1838,6 +1838,10 @@ def _add_logging_args(parser):
     log_factory = ArgumentGroupFactory(LoggerConfig, exclude = ["log_throughput_to_tensorboard", "throughput_window_size", "memory_keys", "log_l2_norm_grad_to_tensorboard", "log_runtime_to_tensorboard", "runtime_time_unit", "filter_warnings", "modules_to_filter", "set_level_for_all_loggers", "save_config_filepath"])
     group = log_factory.build_group(parser, title="logging")
 
+    group.add_argument('--log-overload-factor', action='store_true',
+                       help='If set, log MoE router overload factors to tensorboard: '
+                       'avg_overload_factor, max_overload_factor (load imbalance across EP ranks), '
+                       'and max_cum_overload_factor (peak cumulative tokens ratio for memory analysis).')
     return parser
 
 
@@ -2751,6 +2755,55 @@ def _add_moe_args(parser):
                        choices=['aux_loss', 'seq_aux_loss', 'global_aux_loss', 'sinkhorn', 'none'],
                        default='aux_loss',
                        help='Determines the load balancing strategy for the router. "aux_loss" corresponds to the load balancing loss used in GShard and SwitchTransformer; "seq_aux_loss" corresponds to the load balancing loss used in DeepSeekV2, which computes the loss for each individual sample; "sinkhorn" corresponds to the balancing algorithm used in S-BASE, and "none" implies no load balancing. The default is "aux_loss".')
+    group.add_argument('--moe-router-dtype', type=str,
+                       choices=['fp32', 'fp64'],
+                       default=None,
+                       help='Data type for routing computation and expert output weighted averaging. '
+                            'Fp32/fp64 enhances numerical stability, especially with numerous experts. '
+                            'The perf impact should be negligible when used with permute fusion. '
+                            'None means no changes for dtype.')
+    group.add_argument('--moe-router-fusion', action='store_true',
+                       help='Enable fusion for MoE TopK routing and aux-loss computation. This is only supported in TransformerEngine 2.7.0 and above.')
+    group.add_argument('--moe-router-score-function', type=str,
+                       choices=['softmax', 'sigmoid'],
+                       default='softmax',
+                       help='Score function for MoE TopK routing. Can be "softmax" or "sigmoid".')
+    group.add_argument('--moe-router-topk', type=int, default=2,
+                       help='Number of experts to route to for each token. The default is 2.')
+    group.add_argument('--moe-router-pre-softmax', action='store_true',
+                       help='Enable pre-softmax routing for MoE, which means softmax is before the top-k selection. By default, softmax is done after top-k.')
+    group.add_argument('--moe-router-num-groups', type=int, default=None,
+                       help='Number of groups to divide experts into for group-limited routing. When using group-limited routing: 1) Experts are divided into equal-sized groups, 2) For each token, a subset of groups are selected based on routing scores (sum of top-2 expert scores within each group), 3) From these selected groups, moe_router_topk experts are chosen.'
+                       'Two common use cases: 1) Device-limited routing: Set equal to expert parallel size (EP) to limit each token to experts on a subset of devices (See DeepSeek-V2: https://arxiv.org/pdf/2405.04434) 2) Node-limited routing: Set equal to number of nodes in EP group to limit each token to experts on a subset of nodes (See DeepSeek-V3: https://arxiv.org/pdf/2412.19437)')
+    group.add_argument('--moe-router-group-topk', type=int, default=None,
+                       help='Number of selected groups for group-limited routing.')
+    group.add_argument('--moe-router-topk-scaling-factor', type=float, default=None,
+                       help='Scaling factor for routing score in top-k selection, only works when --moe-router-pre-softmax enabled. Defaults to None, which means no scaling.')
+    group.add_argument('--moe-router-enable-expert-bias', action='store_true',
+                       help='TopK routing with dynamic expert bias in the aux-loss-free load balancing strategy. '
+                       'The routing decision is based on the sum of the routing scores and the expert bias. '
+                       'See https://arxiv.org/abs/2408.15664 for details.')
+    group.add_argument('--moe-router-bias-update-rate', type=float, default=1e-3,
+                       help='Expert bias update rate in the aux-loss-free load balancing strategy. '
+                       'The expert bias is updated based on the number of assigned tokens to each expert in a global batch, '
+                       'where the bias is increased for the experts with less assigned tokens and decreased for the experts with more assigned tokens. '
+                       'The default value 1e-3 is same as that used in DeepSeekV3.')
+    group.add_argument('--moe-router-force-load-balancing', action='store_true',
+                       help='[Experimental] Force override routing to balance token distribution using random logits for MoE routers, supporting naive top-k and group-limited top-k. This experimental feature is for benchmarking purposes only!')
+    group.add_argument('--moe-router-force-biased', type=float, default=None,
+                       help='[Experimental] Apply random bias to router logits with shared seed across all ranks. '
+                       'If positive, generates new random bias each forward pass. '
+                       'If negative, generates bias once per layer and reuses it (abs value is std). '
+                       'This experimental feature is for benchmarking purposes only!')
+    group.add_argument('--moe-router-padding-for-quantization', action='store_true',
+                       help='Pad the routing_map to make sure the number of tokens each expert received '
+                       'is a multiple of 16/32 for FP8/FP4 precision. It is suggested to enable this for '
+                       'dropless training with FP8/FP4 precision when num_local_experts > 1. This is a more '
+                       'efficient way to pad for FP8/FP4 which eliminates the explicit padding in the '
+                       'GroupedMLP layer.')
+    group.add_argument('--moe-router-padding-for-fp8', action='store_true',
+                       help='[Compatibility alias for --moe-router-padding-for-quantization] '
+                       'Enabling this will also enable --moe-router-padding-for-quantization.')
     group.add_argument('--moe-aux-loss-coeff', type=float, nargs='+', default=0.0,
                        help='Scaling coefficient for the aux loss: a starting value of 1e-2 is recommended.')
     # Token dispatcher arguments
