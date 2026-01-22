@@ -918,10 +918,18 @@ class TEGroupedMLP(MegatronModule):
         if self.config.moe_paged_stash:
             permuted_local_hidden_states = paged_stash_group_start(permuted_local_hidden_states)
         if self.moe_paged_stash_expert_fc1:
+            max_num_tokens = permuted_local_hidden_states.shape[0]
+            # Average/expected tokens is a pre-padding estimate used by paged stashing heuristics.
+            # moe_expert_rank_capacity_factor is required when moe_paged_stash is enabled.
+            cap_factor = self.config.moe_expert_rank_capacity_factor
+            avg_num_tokens = (
+                int(max_num_tokens // cap_factor) if cap_factor is not None and cap_factor > 0 else None
+            )
             offload_context = get_paged_stash_context(
                 name="expert_fc1",
-                max_num_tokens=permuted_local_hidden_states.shape[0],
+                max_num_tokens=max_num_tokens,
                 num_tokens_tensor=tokens_per_expert.sum(),
+                avg_num_tokens=avg_num_tokens,
             )
         else:
             offload_context = get_fine_grained_offloading_context(self.offload_expert_fc1)
@@ -1014,10 +1022,18 @@ class TEGroupedMLP(MegatronModule):
                 )
         else:
             if self.moe_paged_stash_moe_act:
+                max_num_tokens = fc1_output.shape[0]
+                cap_factor = self.config.moe_expert_rank_capacity_factor
+                avg_num_tokens = (
+                    int(max_num_tokens // cap_factor)
+                    if cap_factor is not None and cap_factor > 0
+                    else None
+                )
                 offload_context = get_paged_stash_context(
                     name="moe_act",
-                    max_num_tokens=fc1_output.shape[0],
+                    max_num_tokens=max_num_tokens,
                     num_tokens_tensor=tokens_per_expert.sum(),
+                    avg_num_tokens=avg_num_tokens,
                 )
             else:
                 offload_context = get_fine_grained_offloading_context(self.offload_moe_act)
@@ -1029,10 +1045,16 @@ class TEGroupedMLP(MegatronModule):
             )
 
         if self.moe_paged_stash_expert_fc2:
+            max_num_tokens = bias_act_output.shape[0]
+            cap_factor = self.config.moe_expert_rank_capacity_factor
+            avg_num_tokens = (
+                int(max_num_tokens // cap_factor) if cap_factor is not None and cap_factor > 0 else None
+            )
             offload_context = get_paged_stash_context(
                 name="expert_fc2",
-                max_num_tokens=bias_act_output.shape[0],
+                max_num_tokens=max_num_tokens,
                 num_tokens_tensor=tokens_per_expert.sum(),
+                avg_num_tokens=avg_num_tokens,
             )
         else:
             offload_context = nullcontext()
