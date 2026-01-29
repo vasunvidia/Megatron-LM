@@ -13,7 +13,7 @@ from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     fine_grained_offloading_group_start,
     get_fine_grained_offloading_context,
 )
-from megatron.core.pipeline_parallel.utils import ScheduleNode, make_viewless
+from megatron.core.pipeline_parallel.utils import ScheduleNode, make_viewless, stream_acquire_context
 from megatron.core.transformer.module import float16_to_fp32
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.multi_token_prediction import (
@@ -293,9 +293,11 @@ class TransformerLayerNode(ScheduleNode):
         """Computes the weight gradients for the transformer layer node."""
         if not self.delay_wgrad_compute:
             return
-        with torch.cuda.nvtx.range(f"{self.name} wgrad"):
-            for module in self.bwd_dw_callables:
-                module.backward_dw()
+        with stream_acquire_context(self.stream, self.event):
+            with torch.cuda.stream(self.stream):
+                with torch.cuda.nvtx.range(f"{self.name} wgrad"):
+                    for module in self.bwd_dw_callables:
+                        module.backward_dw()
 
         # the output grad memory is last used in wgrad compute, should be safe to release.
         assert self.delay_grads_release, "output grad memory should be valid before wgrad."
@@ -408,6 +410,9 @@ def build_transformer_layer_callables(layer: TransformerLayer):
 
         dispatched_tokens, dispatched_probs = layer.mlp.dispatch(local_tokens, probs)
         node.layer_state.dispatched_probs = node.detach(dispatched_probs)
+        comm_manager = getattr(token_dispatcher, '_comm_manager', None)
+        if comm_manager is not None and hasattr(comm_manager, 'get_number_of_tokens_per_expert'):
+            node.layer_state.tokens_per_expert = comm_manager.get_number_of_tokens_per_expert()
         return dispatched_tokens
 
     def submodule_moe_forward(node: ScheduleNode, dispatched_tokens: torch.Tensor):
