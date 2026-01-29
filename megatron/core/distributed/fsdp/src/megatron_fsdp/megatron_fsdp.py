@@ -986,18 +986,19 @@ class MegatronFSDP(torch.nn.Module):
                 )
         else:
             self.synchronize_param_gather()
-            for bucket_id in range(self.all_gather_pipeline.num_buckets):
-                self.all_gather_pipeline.async_bucket_gather(bucket_id=bucket_id)
-                group = self.param_and_grad_buffer.parameter_groups[bucket_id]
-                if group.model_weight_buffer is None:
-                    continue
+            if self.ddp_config.fsdp_all_gather_in_start_param_sync:
+                for bucket_id in range(self.all_gather_pipeline.num_buckets):
+                    self.all_gather_pipeline.async_bucket_gather(bucket_id=bucket_id)
+                    group = self.param_and_grad_buffer.parameter_groups[bucket_id]
+                    if group.model_weight_buffer is None:
+                        continue
 
-                if group.model_weight_buffer.is_data_distributed:
-                    # If model weight is sharded, we wait for the all-gather to complete and
-                    # then release the bucket immediately to save memory usage.
+                    if group.model_weight_buffer.is_data_distributed:
+                        # If model weight is sharded, we wait for the all-gather to complete and
+                        # then release the bucket immediately to save memory usage.
+                        self.all_gather_pipeline.wait_bucket_ready(bucket_id)
+                for bucket_id in range(self.all_gather_pipeline.num_buckets):
                     self.all_gather_pipeline.wait_bucket_ready(bucket_id)
-            for bucket_id in range(self.all_gather_pipeline.num_buckets):
-                self.all_gather_pipeline.wait_bucket_ready(bucket_id)
 
     def start_grad_sync(self, *unused):
         """
