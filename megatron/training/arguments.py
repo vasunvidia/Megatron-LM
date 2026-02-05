@@ -1468,8 +1468,6 @@ def _add_inference_args(parser):
     group.add_argument('--use-legacy-static-engine', action='store_true', default=False,
                        help='Use legacy static engine. (Current static engine uses dynamic engine under the hood)',
                        dest='use_legacy_static_engine')
-    group.add_argument('--moe-expert-rank-capacity-factor', type=float, default=None,
-                       help='The capacity factor for each EP rank when packed offloading is enabled.')
     group.add_argument('--inference-max-requests', type=int, default=8,
                        help='Maximum number of requests for inference.',
                        dest='inference_max_batch_size')
@@ -1838,10 +1836,6 @@ def _add_logging_args(parser):
     log_factory = ArgumentGroupFactory(LoggerConfig, exclude = ["log_throughput_to_tensorboard", "throughput_window_size", "memory_keys", "log_l2_norm_grad_to_tensorboard", "log_runtime_to_tensorboard", "runtime_time_unit", "filter_warnings", "modules_to_filter", "set_level_for_all_loggers", "save_config_filepath"])
     group = log_factory.build_group(parser, title="logging")
 
-    group.add_argument('--log-overload-factor', action='store_true',
-                       help='If set, log MoE router overload factors to tensorboard: '
-                       'avg_overload_factor, max_overload_factor (load imbalance across EP ranks), '
-                       'and max_cum_overload_factor (peak cumulative tokens ratio for memory analysis).')
     return parser
 
 
@@ -2134,11 +2128,6 @@ def _add_training_args(parser):
                        help='Use the legacy Megatron models, not Megatron-Core models.')
     group.add_argument('--high-priority-stream-groups', nargs='*', type=str, default=[],
                        help='The communicator group names to use high priority streams.')
-    group.add_argument('--moe-paged-stash', action='store_true',
-                       help='Enable paged stash for MoE expert activations.')
-    group.add_argument('--stash-modules', nargs='*', type=str, default=[],
-                       choices=['expert_fc1', 'moe_act', 'expert_fc2'],
-                       help='The MoE submodules to stash activations for. Choices: "expert_fc1", "moe_act", "expert_fc2".')
     group.add_argument('--disable-jit-fuser', action='store_true',
                        help='Disable the JIT fuser.')
 
@@ -2743,8 +2732,6 @@ def _add_moe_args(parser):
                             'where 1 indicates an expert layer and 0 indicates a dense layer. '
                             'Examples: "([0]+[1]*23)": 1 dense layer followed by 23 expert layers, '
                             '"([1]*3+[0]*2)*2": Three expert layers followed by two dense layers, repeated twice.')
-    group.add_argument('--moe-use-device-initiated-grouped-gemm', action='store_true',
-                       help='Use the cutlass grouped gemm kernel, which allows for the token_per_expert tensor on GPU. This can prevent the GPU-CPU synchronization during the grouped gemm.')
     group.add_argument('--moe-use-upcycling', action='store_true',
                        help='Load a checkpoint of a dense model, convert it into an MoE model, and save the converted model to the path specified by --save. '
                        'Upcycling is implemented on the top of distributed checkpointing, so it supports parallel modes different from the dense model.')
@@ -2755,11 +2742,6 @@ def _add_moe_args(parser):
                        help='Determines the load balancing strategy for the router. "aux_loss" corresponds to the load balancing loss used in GShard and SwitchTransformer; "seq_aux_loss" corresponds to the load balancing loss used in DeepSeekV2, which computes the loss for each individual sample; "sinkhorn" corresponds to the balancing algorithm used in S-BASE, and "none" implies no load balancing. The default is "aux_loss".')
     group.add_argument('--moe-aux-loss-coeff', type=float, nargs='+', default=0.0,
                        help='Scaling coefficient for the aux loss: a starting value of 1e-2 is recommended.')
-    group.add_argument('--moe-router-force-biased', type=float, default=None,
-                       help='[Experimental] Apply random bias to router logits with shared seed across all ranks. '
-                       'If positive, generates new random bias each forward pass. '
-                       'If negative, generates bias once per layer and reuses it (abs value is std). '
-                       'This experimental feature is for benchmarking purposes only!')
     # Token dispatcher arguments
     # MoE communication overlap arguments
 
