@@ -834,10 +834,6 @@ class TEGroupedMLP(MegatronModule):
                     offload_context = nullcontext()
                 with offload_context:
                     bias_act_output = bias_act_func(fc1_output, bias_parallel, permuted_probs)
-        if self.offload_moe_act:
-            (bias_act_output,) = fine_grained_offloading_group_commit(
-                bias_act_output, name="moe_act", forced_released_tensors=[fc1_output]
-            )
 
         if self.moe_paged_stash_expert_fc2:
             max_num_tokens = bias_act_output.shape[0]

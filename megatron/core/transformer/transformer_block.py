@@ -16,9 +16,6 @@ from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.transformer.moe.paged_stash import (
-    paged_stash_set_last_layer,
-)
 from megatron.core.pipeline_parallel.utils import is_vp_first_stage, is_vp_last_stage
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.enums import CudaGraphScope, LayerType

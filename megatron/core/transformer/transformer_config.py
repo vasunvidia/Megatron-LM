@@ -737,6 +737,16 @@ class TransformerConfig(ModelParallelConfig):
     moe_apply_probs_on_input: bool = False
     """Apply probs on input of experts instead of applying after activation and glu."""
 
+    moe_latent_size: Optional[int] = None
+    """Latent projection dimension for MoE. If None, MoE latent projections are not used."""
+
+    moe_deepep_num_sms: int = 20
+    """Number of SMs to use for DeepEP."""
+
+    moe_hybridep_num_sms: int = 16
+    """Number of SMs to use for HybridEP. In pure NVL scenarios,
+    16 SMs can generally achieve good bandwidth."""
+
     moe_expert_rank_capacity_factor: Optional[float] = None
     """The capacity factor for each expert, None means no token will be dropped.
     The default is None."""
