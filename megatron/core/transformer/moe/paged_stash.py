@@ -524,7 +524,6 @@ class PagedStashManager:
     def __init__(self):
         """Initialize the manager with queues and dedicated CUDA streams."""
         # allocate streams and events for synchronization
-        self.enabled = False
         self._pack_stream = torch.cuda.Stream()
         # Currently paged stashing is not stream-safe, so use the same stream for packing
         # and unpacking
@@ -539,15 +538,15 @@ class PagedStashManager:
         self._current_layer_name = None
         self.vp_size = None
         self.current_vp_stage = None
-        self._last_layer = False
-        self.status = 'begin'  # begin, capture, captured
+        self.status = 'capture'  # capture, captured
         # If element is +ve, it denotes forward pass of vp stage,
         # if -ve, it denotes backward pass of vp stage
         self._pp_schedule = None
         self.current_layer = None
         self.current_microbatch = None
-        self.current_schedule_index = None
+        self.current_schedule_index = 0
 
+        self._group_started = False
         # Track max tokens needed across all vp_stages grouped by dtype and hidden_size
         self.max_tokens_across_vp_stages = None
         self.temp_tokens_across_vp_stages = None
@@ -696,9 +695,7 @@ class PagedStashManager:
             if dtype not in self.stash_buffers:
                 self.stash_buffers[dtype] = {}
             assert hidden_size not in self.stash_buffers[dtype]
-            num_tokens = int(
-                max_tokens_dict[dtype, hidden_size] * scale
-            )
+            num_tokens = int(max_tokens_dict[dtype, hidden_size] * scale)
             self.stash_buffers[dtype][hidden_size] = PagedStashBuffer(
                 num_tokens, hidden_size, self.page_size, self.device, self.overflow, dtype
             )
@@ -707,9 +704,6 @@ class PagedStashManager:
         """Update the pp schedule."""
         if self._pp_schedule is None:
             self._pp_schedule = []
-            # current layer and microbatch for each vp stage for forward pass
-            self.current_layer = [1 for _ in range(self.vp_size)]
-            self.current_microbatch = [1 for _ in range(self.vp_size)]
 
         assert self.vp_size is not None
         if layer_no is None:
@@ -718,9 +712,6 @@ class PagedStashManager:
             layer_no = self.current_layer[vp_stage_index]
             self.current_layer[vp_stage_index] += 1
             microbatch_no = self.current_microbatch[vp_stage_index]
-            if self._last_layer:
-                self.current_layer[vp_stage_index] = 1
-                self.current_microbatch[vp_stage_index] += 1
 
         if self.status == 'capture':
             self._pp_schedule.append(self.get_schedule_layer(vp_stage, layer_no, microbatch_no))
@@ -731,6 +722,15 @@ class PagedStashManager:
         assert actual == expected, f"schedule {actual} != {expected}"
 
         return layer_no, microbatch_no
+
+    def update_model_chunk(self, vp_stage_index):
+        """Update layer=1, increment microbatch of new vp vp_stage."""
+        if self.current_layer is None:
+            # current layer and microbatch for each vp stage for forward pass
+            self.current_layer = [1 for _ in range(self.vp_size)]
+            self.current_microbatch = [0 for _ in range(self.vp_size)]
+        self.current_layer[vp_stage_index] = 1
+        self.current_microbatch[vp_stage_index] += 1
 
     def on_save_for_backward(self, tensor: torch.Tensor) -> Any:
         """
@@ -750,13 +750,17 @@ class PagedStashManager:
                 tensor._rowwise_data is None
             ), f"rowwise_data is not None; Only columnwise data is supported for paged stashing"
 
+        if self.max_tokens_across_vp_stages is None:
+            self.max_tokens_across_vp_stages = {}
+            self.temp_tokens_across_vp_stages = {}
+            self.max_avg_tokens_across_vp_stages = {}
+            self.temp_avg_tokens_across_vp_stages = {}
+
         avg_num_tokens = None
         if self.status == 'capture':
 
             self.num_tokens = self.num_tokens_tensor.item()
-            avg_num_tokens = (
-                int(self.avg_num_tokens) if self.avg_num_tokens is not None else None
-            )
+            avg_num_tokens = int(self.avg_num_tokens) if self.avg_num_tokens is not None else None
 
             dtype = (
                 tensor.dtype
@@ -909,20 +913,18 @@ def paged_stash_group_start(tensor):
     """Mark the start of a layer group and prepare for stash/reload."""
     rank = torch.distributed.get_rank()
     stash_manager = PagedStashManager.get_instance()
-    if not stash_manager.enabled:
+    if stash_manager._group_started:
         return tensor
+    stash_manager._group_started = True
     return PP_PreScheduleFunction.apply(tensor, stash_manager)
 
 
 def get_paged_stash_context(
-    name=None,
-    max_num_tokens=None,
-    num_tokens_tensor=None,
-    avg_num_tokens=None,
+    enabled, name=None, max_num_tokens=None, num_tokens_tensor=None, avg_num_tokens=None
 ):
     """Get the paged stash context"""
     stash_manager = PagedStashManager.get_instance()
-    if not stash_manager.enabled:
+    if not enabled:
         return nullcontext()
     stash_manager.max_num_tokens = max_num_tokens
     stash_manager.avg_num_tokens = avg_num_tokens
@@ -933,39 +935,23 @@ def get_paged_stash_context(
     return pack_unpack_context
 
 
-def paged_stash_group_commit(tensor, name=None):
+def paged_stash_group_commit(tensor):
     """Mark the end of a layer group and prepare for stash/reload."""
     rank = torch.distributed.get_rank()
     stash_manager = PagedStashManager.get_instance()
     stash_manager.device = tensor.device
-    if not stash_manager.enabled:
+    if not stash_manager._group_started:
         return tensor
+    stash_manager._group_started = False
     return PP_PostScheduleFunction.apply(tensor, stash_manager)
 
 
 def paged_stash_init_chunk_handler(vp_size, vp_stage):
     """Initialize the chunk handler, called at the start of a microbatch forward pass."""
     stash_manager = PagedStashManager.get_instance()
-    if not stash_manager.enabled:
-        return
     stash_manager.current_vp_stage = vp_stage if vp_stage is not None else 0
-    if vp_size is not None:
-        stash_manager.vp_size = vp_size
-    else:
-        stash_manager.vp_size = 1
-    if stash_manager.max_tokens_across_vp_stages is None:
-        stash_manager.max_tokens_across_vp_stages = {}
-        stash_manager.temp_tokens_across_vp_stages = {}
-        stash_manager.max_avg_tokens_across_vp_stages = {}
-        stash_manager.temp_avg_tokens_across_vp_stages = {}
-
-
-def paged_stash_set_last_layer(is_last_layer=False):
-    """Set the last layer flag."""
-    stash_manager = PagedStashManager.get_instance()
-    if not stash_manager.enabled:
-        return
-    stash_manager._last_layer = is_last_layer
+    stash_manager.vp_size = vp_size if vp_size is not None else 1
+    stash_manager.update_model_chunk(vp_stage)
 
 
 def paged_stash_reset(enabled=True):
@@ -979,9 +965,7 @@ def paged_stash_reset(enabled=True):
     if not enabled:
         return
 
-    if stash_manager.status == 'begin':
-        stash_manager.status = 'capture'
-    elif stash_manager.status == 'capture':
+    if stash_manager.status == 'capture':
         stash_manager.status = 'captured'
         stash_buffer_size_factor = float(os.getenv('STASH_BUFFER_SIZE_FACTOR', '1.10'))
         stash_manager.allocate_stash_buffers(stash_buffer_size_factor=stash_buffer_size_factor)
@@ -998,7 +982,7 @@ def paged_stash_reset(enabled=True):
                 stash_manager.stash_buffers[dtype][hidden_size].reset()
         stash_manager.overflow.zero_()
         stash_manager.current_layer = [1 for _ in range(stash_manager.vp_size)]
-        stash_manager.current_microbatch = [1 for _ in range(stash_manager.vp_size)]
+        stash_manager.current_microbatch = [0 for _ in range(stash_manager.vp_size)]
         assert (
             len(stash_manager.paged_tensors_to_stash) == 0
         ), f"paged_tensors_to_stash is not empty {stash_manager.paged_tensors_to_stash}"

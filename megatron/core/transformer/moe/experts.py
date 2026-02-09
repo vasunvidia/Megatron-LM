@@ -42,11 +42,7 @@ from megatron.core.transformer.moe.moe_utils import (
     ProcessGroupCollection,
     get_align_size_for_quantization,
 )
-from megatron.core.transformer.moe.paged_stash import (
-    get_paged_stash_context,
-    paged_stash_group_commit,
-    paged_stash_group_start,
-)
+from megatron.core.transformer.moe.paged_stash import get_paged_stash_context
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import (
@@ -710,31 +706,25 @@ class TEGroupedMLP(MegatronModule):
             # Probs already applied, so reset to 1.
             permuted_probs = torch.ones_like(permuted_probs)
 
+        # stash context arguments
+        max_num_tokens = permuted_local_hidden_states.shape[0]
+        # Average/expected tokens is a pre-padding estimate used by paged stashing heuristics.
+        # moe_expert_rank_capacity_factor is required when moe_paged_stash is enabled.
+        cap_factor = self.config.moe_expert_rank_capacity_factor
+        avg_num_tokens = (
+            int(max_num_tokens // cap_factor) if cap_factor is not None and cap_factor > 0 else None
+        )
+        stash_context_args = (max_num_tokens, tokens_per_expert.sum(), avg_num_tokens)
         with off_interface(
-            self.offload_expert_fc1, permuted_local_hidden_states, "expert_fc1"
+            self.offload_expert_fc1,
+            permuted_local_hidden_states,
+            "expert_fc1",
+            stash=self.moe_paged_stash_expert_fc1,
+            stash_context_args=stash_context_args,
         ) as permuted_local_hidden_states:
-            if self.config.moe_paged_stash:
-                permuted_local_hidden_states = paged_stash_group_start(permuted_local_hidden_states)
-            if self.moe_paged_stash_expert_fc1:
-                max_num_tokens = permuted_local_hidden_states.shape[0]
-                # Average/expected tokens is a pre-padding estimate used by paged stashing heuristics.
-                # moe_expert_rank_capacity_factor is required when moe_paged_stash is enabled.
-                cap_factor = self.config.moe_expert_rank_capacity_factor
-                avg_num_tokens = (
-                    int(max_num_tokens // cap_factor) if cap_factor is not None and cap_factor > 0 else None
-                )
-                offload_context = get_paged_stash_context(
-                    name="expert_fc1",
-                    max_num_tokens=permuted_local_hidden_states.shape[0],
-                    num_tokens_tensor=tokens_per_expert.sum(),
-                    avg_num_tokens=avg_num_tokens,
-                )
-            else:
-                offload_context = nullcontext()
-            with offload_context:
-                fc1_output, bias_parallel = self.linear_fc1(
-                    permuted_local_hidden_states, tokens_per_expert
-                )
+            fc1_output, bias_parallel = self.linear_fc1(
+                permuted_local_hidden_states, tokens_per_expert
+            )
         if self.offload_expert_fc1:
             fc1_output = off_interface.group_commit(
                 fc1_output,
@@ -809,39 +799,29 @@ class TEGroupedMLP(MegatronModule):
             return intermediate_parallel
 
         if self.activation_recompute:
+            assert (
+                not self.moe_paged_stash_moe_act
+            ), "moe_paged_stash_moe_act cannot be True when activation_recompute is True"
             self.activation_checkpoint = tensor_parallel.CheckpointWithoutOutput()
-            with off_interface(self.offload_moe_act, fc1_output, "moe_act") as fc1_output:
+            with off_interface(
+                self.offload_moe_act, fc1_output, "moe_act", stash=self.moe_paged_stash_moe_act
+            ) as fc1_output:
                 bias_act_output = self.activation_checkpoint.checkpoint(
                     bias_act_func, fc1_output, bias_parallel, permuted_probs
                 )
         else:
-            with off_interface(self.offload_moe_act, fc1_output, "moe_act") as fc1_output:
-                if self.moe_paged_stash_moe_act:
-                    max_num_tokens = fc1_output.shape[0]
-                    cap_factor = self.config.moe_expert_rank_capacity_factor
-                    avg_num_tokens = (
-                        int(max_num_tokens // cap_factor)
-                        if cap_factor is not None and cap_factor > 0
-                        else None
-                    )
-                    offload_context = get_paged_stash_context(
-                        name="moe_act",
-                        max_num_tokens=fc1_output.shape[0],
-                        num_tokens_tensor=tokens_per_expert.sum(),
-                        avg_num_tokens=avg_num_tokens,
-                    )
-                else:
-                    offload_context = nullcontext()
-                with offload_context:
-                    bias_act_output = bias_act_func(fc1_output, bias_parallel, permuted_probs)
+            with off_interface(
+                self.offload_moe_act,
+                fc1_output,
+                "moe_act",
+                stash=self.moe_paged_stash_moe_act,
+                stash_context_args=stash_context_args,
+            ) as fc1_output:
+                bias_act_output = bias_act_func(fc1_output, bias_parallel, permuted_probs)
 
         if self.moe_paged_stash_expert_fc2:
-            max_num_tokens = bias_act_output.shape[0]
-            cap_factor = self.config.moe_expert_rank_capacity_factor
-            avg_num_tokens = (
-                int(max_num_tokens // cap_factor) if cap_factor is not None and cap_factor > 0 else None
-            )
             offload_context = get_paged_stash_context(
+                self.moe_paged_stash_expert_fc2,
                 name="expert_fc2",
                 max_num_tokens=max_num_tokens,
                 num_tokens_tensor=tokens_per_expert.sum(),
@@ -851,16 +831,18 @@ class TEGroupedMLP(MegatronModule):
             offload_context = nullcontext()
         with offload_context:
             output, output_bias = self.linear_fc2(bias_act_output, tokens_per_expert)
-        if self.config.moe_paged_stash:
-            output = paged_stash_group_commit(output, name="expert_fc2")
         if self.activation_recompute:
             self.activation_checkpoint.discard_output_and_register_recompute(output)
 
         # Delay the offload of the moe act until after the linear_fc2 has been computed
         # to make sure the fc1_output is reloaded to GPU before recomputing moe_act.
-        if self.offload_moe_act:
+        if self.offload_moe_act or self.config.moe_paged_stash:
             output = off_interface.group_commit(
-                output, name="moe_act", forced_released_tensors=[fc1_output]
+                output,
+                name="moe_act",
+                forced_released_tensors=[fc1_output],
+                offload=self.offload_moe_act,
+                stash=self.config.moe_paged_stash,
             )
         output = self._apply_bias(output, output_bias, tokens_per_expert, permuted_probs)
 

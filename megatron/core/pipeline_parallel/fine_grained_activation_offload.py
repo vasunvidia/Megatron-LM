@@ -11,6 +11,13 @@ DEBUG = False
 DEBUG_RANK = 0
 
 from megatron.core.transformer.cuda_graphs import is_graph_capturing
+from megatron.core.transformer.moe.paged_stash import (
+    get_paged_stash_context,
+    paged_stash_group_commit,
+    paged_stash_group_start,
+    paged_stash_init_chunk_handler,
+    paged_stash_reset,
+)
 
 
 def debug_rank(message):
@@ -1208,16 +1215,37 @@ def fine_grained_offloading_backward_record(tensor, event: torch.cuda.Event) -> 
 class FineGrainedActivationOffloadingInterface:
     """Interface for fine-grained activation offloading."""
 
-    def __init__(self, offload: bool, tensor: torch.Tensor, name: str):
+    def __init__(
+        self,
+        offload: bool,
+        tensor: torch.Tensor,
+        name: str,
+        stash: bool = False,
+        stash_context_args=None,
+    ):
         self.offload = offload
+        self.stash = stash
         self.tensor = tensor
+        assert not (offload and stash), "offload and stash cannot be both True"
         self.name = name
+        self.stash_context_args = stash_context_args
 
     def __enter__(self):
         """Enter context manager to enable activation offloading hooks."""
         if self.offload:
             self.tensor = fine_grained_offloading_group_start(self.tensor, self.name)
             PipelineOffloadManager.get_instance().__enter__()
+        if self.stash:
+            self.tensor = paged_stash_group_start(self.tensor)
+            stash_context = get_paged_stash_context(
+                self.stash,
+                name=self.name,
+                max_num_tokens=self.stash_context_args[0],
+                num_tokens_tensor=self.stash_context_args[1],
+                avg_num_tokens=self.stash_context_args[2],
+            )
+            stash_context.__enter__()
+
         return self.tensor
 
     def __exit__(self, *args: Any):
@@ -1226,11 +1254,16 @@ class FineGrainedActivationOffloadingInterface:
             PipelineOffloadManager.get_instance().__exit__()
 
     @staticmethod
-    def init_chunk_handler(vp_size, vp_stage, min_offloaded_tensor_size):
+    def init_chunk_handler(
+        vp_size, vp_stage, min_offloaded_tensor_size, offload: bool, stash: bool
+    ):
         """Initialize the chunk handler, called at the start of a microbatch forward pass."""
-        PipelineOffloadManager.get_instance().init_model_chunk_offload_handler(
-            vp_size, vp_stage, min_offloaded_tensor_size
-        )
+        if offload:
+            PipelineOffloadManager.get_instance().init_model_chunk_offload_handler(
+                vp_size, vp_stage, min_offloaded_tensor_size
+            )
+        if stash:
+            paged_stash_init_chunk_handler(vp_size, vp_stage)
 
     @staticmethod
     def get_context(flag):
@@ -1238,11 +1271,17 @@ class FineGrainedActivationOffloadingInterface:
         return PipelineOffloadManager.get_instance() if flag else nullcontext()
 
     @staticmethod
-    def group_commit(tensor, name, forced_released_tensors=None, delay_offload=False):
+    def group_commit(
+        tensor, name, forced_released_tensors=None, delay_offload=False, offload=True, stash=False
+    ):
         """Group commit the tensors."""
-        return fine_grained_offloading_group_commit(
-            tensor, name, forced_released_tensors, delay_offload
-        )
+        if offload:
+            tensor = fine_grained_offloading_group_commit(
+                tensor, name, forced_released_tensors, delay_offload
+            )
+        if stash:
+            tensor = paged_stash_group_commit(tensor)
+        return tensor
 
     @staticmethod
     def mark_not_offloadable(tensor: torch.Tensor):
@@ -1256,9 +1295,12 @@ class FineGrainedActivationOffloadingInterface:
         torch.cuda.current_stream().record_event(event)
         torch.cuda.current_stream().wait_stream(d2h_stream)
 
-    def reset():
+    def reset(offload: bool, stash: bool):
         """Reset the chunk handler."""
-        PipelineOffloadManager.get_instance().reset()
+        if offload:
+            PipelineOffloadManager.get_instance().reset()
+        if stash:
+            paged_stash_reset(enabled=stash)
 
     @staticmethod
     def reset_instance():

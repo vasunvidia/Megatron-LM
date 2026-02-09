@@ -26,7 +26,6 @@ from megatron.core.quantization.utils import get_quant_config_or_none
 from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
 from megatron.core.transformer.enums import CudaGraphScope, ModelType
 from megatron.core.transformer.linear_cross_entropy import LinearCrossEntropyModule
-from megatron.core.transformer.moe.paged_stash import paged_stash_init_chunk_handler
 from megatron.core.transformer.multi_token_prediction import (
     MTPLossAutoScaler,
     MTPLossLoggingHelper,
@@ -456,12 +455,14 @@ class GPTModel(LanguageModule):
 
         return preproc_output
 
-    def preprocess_for_fine_grained_offloading(self):
+    def preprocess_for_fine_grained_offloading(self, offload, stash):
         """Preprocess for fine-grained activation offloading."""
         off_interface.init_chunk_handler(
             vp_size=self.config.virtual_pipeline_model_parallel_size,
             vp_stage=self.vp_stage,
             min_offloaded_tensor_size=self.config.min_offloaded_tensor_size,
+            offload=offload,
+            stash=stash,
         )
         if self.disable_param_offloading:
             for param in self.decoder.parameters():
@@ -473,12 +474,6 @@ class GPTModel(LanguageModule):
                 for param in self.output_layer.parameters():
                     off_interface.mark_not_offloadable(param)
             self.disable_param_offloading = False
-
-    def preprocess_for_paged_stash(self):
-        """Preprocess for paged stash."""
-        return paged_stash_init_chunk_handler(
-            vp_size=self.config.virtual_pipeline_model_parallel_size, vp_stage=self.vp_stage
-        )
 
     def forward(
         self,
@@ -509,11 +504,10 @@ class GPTModel(LanguageModule):
                 Shape [bsz, seq_length]. True = padding (exclude), False = valid (include).
                 Only used for MoE layers to exclude padding tokens from routing computations.
         """
-        if self.config.fine_grained_activation_offloading:
-            self.preprocess_for_fine_grained_offloading()
-
-        if self.config.moe_paged_stash:
-            self.preprocess_for_paged_stash()
+        if self.config.fine_grained_activation_offloading or self.config.moe_paged_stash:
+            self.preprocess_for_fine_grained_offloading(
+                self.config.fine_grained_activation_offloading, self.config.moe_paged_stash
+            )
 
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
@@ -821,10 +815,10 @@ class GPTModel(LanguageModule):
             TransformerModelChunkSchedulePlan: The model chunk schedule plan.
         """
 
-        if self.config.fine_grained_activation_offloading:
-            self.preprocess_for_fine_grained_offloading()
-        if self.config.moe_paged_stash:
-            self.preprocess_for_paged_stash()
+        if self.config.fine_grained_activation_offloading or self.config.moe_paged_stash:
+            self.preprocess_for_fine_grained_offloading(
+                self.config.fine_grained_activation_offloading, self.config.moe_paged_stash
+            )
 
         from ..common.model_chunk_schedule_plan import TransformerModelChunkSchedulePlan
 

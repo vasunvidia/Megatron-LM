@@ -7,7 +7,7 @@ import logging
 import torch
 
 from megatron.core.tensor_parallel.random import get_all_rng_states
-from megatron.core.transformer.moe.paged_stash import check_paged_stash_overflow, paged_stash_reset
+from megatron.core.transformer.moe.paged_stash import check_paged_stash_overflow
 
 logger = logging.getLogger(__name__)
 

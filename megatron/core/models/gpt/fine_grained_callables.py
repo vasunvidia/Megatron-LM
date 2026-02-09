@@ -13,7 +13,11 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
 )
-from megatron.core.pipeline_parallel.utils import ScheduleNode, make_viewless, stream_acquire_context
+from megatron.core.pipeline_parallel.utils import (
+    ScheduleNode,
+    make_viewless,
+    stream_acquire_context,
+)
 from megatron.core.transformer.enums import CudaGraphScope
 from megatron.core.transformer.module import GraphableMegatronModule, float16_to_fp32
 from megatron.core.transformer.moe.moe_layer import MoELayer
