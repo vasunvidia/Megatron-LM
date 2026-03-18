@@ -691,6 +691,14 @@ def forward_backward_no_pipelining(
 
     if not forward_only and config.fine_grained_activation_offloading:
         off_interface.reset()
+    # Reset all_gather_pipeline bucket status before next validation iteration
+    if forward_only:
+        for model_chunk in [model]:
+            if (
+                model_chunk.ddp_config.overlap_param_gather
+                and model_chunk.ddp_config.use_megatron_fsdp
+            ):
+                model_chunk.start_param_sync(sync_and_return=True)
 
     if config.timers is not None:
         config.timers('forward-backward').stop()
@@ -2064,6 +2072,14 @@ def forward_backward_pipelining_with_interleaving(
 
     if not forward_only and config.fine_grained_activation_offloading:
         off_interface.reset()
+    # Reset all_gather_pipeline bucket status before next validation iteration
+    if forward_only:
+        for model_chunk in model:
+            if (
+                model_chunk.ddp_config.overlap_param_gather
+                and model_chunk.ddp_config.use_megatron_fsdp
+            ):
+                model_chunk.start_param_sync(sync_and_return=True)
     # Restore config.grad_sync_func and config.param_sync_func.
     if forward_only:
         config.grad_sync_func, config.param_sync_func = grad_sync_func, param_sync_func
@@ -2486,6 +2502,14 @@ def forward_backward_pipelining_without_interleaving(
 
     if not forward_only and config.fine_grained_activation_offloading:
         off_interface.reset()
+    # Reset all_gather_pipeline bucket status before next validation iteration
+    if forward_only:
+        for model_chunk in [model]:
+            if (
+                model_chunk.ddp_config.overlap_param_gather
+                and model_chunk.ddp_config.use_megatron_fsdp
+            ):
+                model_chunk.start_param_sync(sync_and_return=True)
 
     if config.timers is not None:
         config.timers('forward-backward').stop()
