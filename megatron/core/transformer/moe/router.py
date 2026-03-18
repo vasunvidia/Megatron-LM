@@ -55,7 +55,7 @@ class Router(ABC, MegatronModule):
         self.tp_cp_group = pg_collection.tp_cp
         self.tp_dp_cp_group = pg_collection.tp_dp_cp
         self.tp_ep_group = pg_collection.tp_ep
-        self.dp_group = pg_collection.dp
+        self.expt_dp_group = pg_collection.expt_dp
 
         # Initialize the gate weights.
         # TODO: Add support for GPU initialization, which requires updating the golden values.
@@ -718,7 +718,7 @@ class TopKRouter(Router):
                 layer_number=self.layer_number,
                 num_local_experts=num_local_experts,
                 tp_ep_group=self.tp_ep_group,
-                dp_group=self.dp_group,
+                dp_group=self.expt_dp_group,
             )
 
         return probs, routing_map
