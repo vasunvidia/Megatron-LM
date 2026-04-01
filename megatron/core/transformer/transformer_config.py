@@ -782,6 +782,9 @@ class TransformerConfig(ModelParallelConfig):
     Options are "deepep" and "hybridep". Currently only "hybridep" backend supports 
     the MNNVL case."""
 
+    moe_permute_fusion_into_hybridep: bool = False
+    """Fuse token rearrangement ops during token dispatching for HybridEP."""
+
     moe_per_layer_logging: bool = False
     """Enable per-layer logging for MoE, currently supports auxiliary loss and z loss."""
 
@@ -842,6 +845,11 @@ class TransformerConfig(ModelParallelConfig):
     """moe_expert_rank_capacity_factor (float): The capacity factor for each expert rank. Tokens 
     exceeding this budget will be dropped. None means no token will be dropped. 
     The default is None."""
+    moe_hybridep_num_blocks_permute: int = 96
+    """Number of blocks to use for permute part in HybridEP."""
+
+    moe_hybridep_num_blocks_unpermute: int = 96
+    """Number of blocks to use for unpermute part in HybridEP."""
 
     ##################
     # Context Parallel
