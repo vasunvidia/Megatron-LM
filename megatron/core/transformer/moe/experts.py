@@ -893,7 +893,8 @@ class TEGroupedMLP(MegatronModule):
             single_grouped_weight=fc2_single_grouped_weight,
             single_grouped_bias=fc2_single_grouped_bias,
             delay_wgrad_compute=self.config.delay_wgrad_compute,
-            use_prob_bias=self.linear_fc2.use_bias,
+            scale_bias=self.linear_fc2.use_bias,
+#            use_prob_bias=self.linear_fc2.use_bias,
         )
 
         # Copy the weights from GroupedLinear module to GroupedLinear op.
