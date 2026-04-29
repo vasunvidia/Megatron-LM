@@ -100,25 +100,47 @@ class FullCudaGraphWrapper:
     curr_iteration = {'training': 0, 'validation': 0}
     cuda_graph = {'training': None, 'validation': None}
     result = {'training': None, 'validation': None}
+    cached_data_iterator = {'training': None, 'validation': None}
 
-    def __init__(self, forward_backward_func, cuda_graph_warmup_steps=1):
+    def __init__(self, forward_backward_func, cuda_graph_warmup_steps=1, cuda_graph_data_2buffer_step=-1):
         self.forward_backward_func = forward_backward_func
         self.static_loader = StaticBufferLoader()
         self.cuda_graph_warmup_steps = cuda_graph_warmup_steps
+        self.cuda_graph_data_2buffer_step = cuda_graph_data_2buffer_step
+        if self.cuda_graph_data_2buffer_step != -1:
+            logger.info(f'CUDA graph double buffer enabled!!!')
 
-    def data_read(self, data_iterator, model, training, num_microbatches):
+    def data_read(self, data_iterator, model, training, num_microbatches, to_cpu_cache, from_cpu_cache, to_static_gpu):
         """Read all microbatch inputs from Dataloader and copy to static buffers."""
+        assert not (to_cpu_cache and from_cpu_cache)
+        assert not (to_static_gpu and to_cpu_cache)
+        training_str = 'training' if training else 'validation'
+        if from_cpu_cache:
+            assert data_iterator is None and self.cached_data_iterator[training_str] is not None
+            data_iterator = self.cached_data_iterator[training_str]
+            self.cached_data_iterator[training_str] = None
+        else:
+            assert data_iterator is not None
+
+        if to_cpu_cache:
+            assert self.cached_data_iterator[training_str] is None
+
+        training_str = 'training' if training else 'validation'
         if not isinstance(model, list) or len(model) == 1:
             assert not isinstance(data_iterator, list) or len(data_iterator) == 1
             iterator0 = data_iterator if not isinstance(data_iterator, list) else data_iterator[0]
             data_list = []
             if iterator0 is not None:
                 for b in range(num_microbatches):
-                    data_list.append(
-                        self.static_loader(
-                            next(iterator0), 'training' if training else 'validation', b
+                    data_item = next(iterator0)
+                    if to_static_gpu:
+                        data_list.append(
+                            self.static_loader(
+                                data_item, 'training' if training else 'validation', b
+                            )
                         )
-                    )
+                    else:
+                        data_list.append(data_item)
                 data_list = [iter(data_list)]
             else:
                 data_list.append(None)
@@ -129,11 +151,20 @@ class FullCudaGraphWrapper:
                 if data_iterator[i] is not None:
                     data_list_i = []
                     for b in range(num_microbatches):
-                        data_list_i.append(
-                            self.static_loader(
-                                next(data_iterator[i]), 'training' if training else 'validation', b
+                        data_item = next(data_iterator[i])
+                        if to_static_gpu:
+                            #if torch.distributed.get_rank() == 0:
+                            #    print (f'Data item[{i}][{b}]: {data_item}')
+
+                            data_list_i.append(
+                                self.static_loader(
+                                    data_item, 'training' if training else 'validation', b
+                                )
                             )
-                        )
+                        else:
+                            #if torch.distributed.get_rank() == 0:
+                            #    print (f'To cache Data item[{i}][{b}]: {data_item}')
+                            data_list_i.append(data_item)
                     data_list.append(iter(data_list_i))
                 else:
                     data_list.append(None)
@@ -157,11 +188,20 @@ class FullCudaGraphWrapper:
         num_microbatches = kwargs['num_microbatches']
 
         training = not kwargs['forward_only']
-        data_iterator = kwargs['data_iterator']
-        data_list = self.data_read(data_iterator, model, training, num_microbatches)
+        
+        training_str = 'training' if training else 'validation'
+
+        data_iterator, to_cpu_cache, from_cpu_cache, to_static_gpu = None, False, False, True
+        if self.cuda_graph_data_2buffer_step == -1 or self.curr_iteration[training_str] <= self.cuda_graph_data_2buffer_step:
+            data_iterator = kwargs['data_iterator']
+#            print (f'Reading from data iterator -> static GPU')
+        else:
+#            print (f'Reading from CPU cache -> static GPU')
+            from_cpu_cache = True
+        data_list = self.data_read(data_iterator, model, training, num_microbatches, to_cpu_cache, from_cpu_cache, to_static_gpu)
+        saved_data_iterator = kwargs['data_iterator']
         kwargs['data_iterator'] = data_list
 
-        training_str = 'training' if training else 'validation'
         curr_iteration = self.curr_iter(training_str)
         if curr_iteration == self.cuda_graph_warmup_steps:
             logger.info(f'Capture CUDA graph for {training_str}!!!')
@@ -187,6 +227,13 @@ class FullCudaGraphWrapper:
             FullCudaGraphWrapper.result[training_str] = self.forward_backward_func(*args, **kwargs)
         else:
             FullCudaGraphWrapper.cuda_graph[training_str].replay()
+        if self.cuda_graph_data_2buffer_step != -1 and self.curr_iteration[training_str] >= self.cuda_graph_data_2buffer_step:
+#            print (f'Reading from data iterator -> CPU cache')
+            data_iterator = saved_data_iterator
+            to_cpu_cache = True
+            from_cpu_cache = False
+            to_static_gpu = False
+            self.cached_data_iterator[training_str] = self.data_read(data_iterator, model, training, num_microbatches, to_cpu_cache, from_cpu_cache, to_static_gpu)
         self.next_iter(training_str)
         return FullCudaGraphWrapper.result[training_str]
 

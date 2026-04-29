@@ -954,6 +954,11 @@ class TransformerConfig(ModelParallelConfig):
     When cuda_graph_impl is set to "local", "full_iteration" can be specified as cuda_graph_scope
     to enable whole iteration CUDA graph. All other values enable layerwise CUDA graph."""
 
+    cuda_graph_data_2buffer_step: int = -1
+    """Step to start double buffering data for CUDA graph.
+    If -1, no double buffering will be enabled.
+    If >1, double buffering will be enabled after the specified step.
+    """
     ####################
     # Hyper-Connection Configuration
     ####################

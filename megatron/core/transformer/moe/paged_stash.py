@@ -1217,6 +1217,7 @@ class PagedStashRunner:
 
     def data_read(self, data_iterator, model, training, num_microbatches):
         """Read all microbatch inputs from Dataloader and copy to static buffers."""
+        #print (f"Reading data for {num_microbatches} microbatches")
         data_iterator_saved = []
         if not isinstance(model, list) or len(model) == 1:
             assert not isinstance(data_iterator, list) or len(data_iterator) == 1
@@ -1355,10 +1356,14 @@ class PagedStashRunner:
                 num_tries < 2
             ), f"PagedStashRunner: num_tries {num_tries} exceeded max attempts!!!"
             num_tries += 1
-            data_iterator, data_list = self.data_read(
-                data_iterator, model, training, num_microbatches
-            )
+            training_str = 'training' if training else 'validation'
 
+            read_times = 1
+            if isinstance(self.forward_backward_func, FullCudaGraphWrapper) and self.forward_backward_func.curr_iteration[training_str] == self.forward_backward_func.cuda_graph_data_2buffer_step:
+                read_times = 2
+            data_iterator, data_list = self.data_read(
+                data_iterator, model, training, num_microbatches * read_times
+            )
             kwargs['data_iterator'] = data_list
             result = self.forward_backward_func(*args, **kwargs)
 
