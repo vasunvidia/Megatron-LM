@@ -1166,6 +1166,7 @@ def check_paged_stash_host_spill():
 class PagedStashRunner:
     """Runner for paged stash"""
 
+    cached_data_iterator = {'training': None, 'validation': None}
     def __init__(self, config, copy_main_params, model, optimizer, forward_backward_func):
         self.stash_manager = PagedStashManager.get_instance()
         self.config = config
@@ -1215,8 +1216,21 @@ class PagedStashRunner:
         for c in self._configs_to_sync_moe_paged_stash:
             c.moe_paged_stash = value
 
-    def data_read(self, data_iterator, model, training, num_microbatches):
+    def data_read(self, data_iterator, model, training, num_microbatches, to_cpu_cache, from_cpu_cache):
         """Read all microbatch inputs from Dataloader and copy to static buffers."""
+        torch.cuda.nvtx.range_push(f"paged_stash_data_read")
+        assert not (to_cpu_cache and from_cpu_cache)
+        training_str = 'training' if training else 'validation'
+
+        if from_cpu_cache:
+            assert data_iterator is None and PagedStashRunner.cached_data_iterator[training_str] is not None
+            data_iterator = PagedStashRunner.cached_data_iterator[training_str]
+            PagedStashRunner.cached_data_iterator[training_str] = None
+        else:
+            assert data_iterator is not None
+        if to_cpu_cache:
+            assert PagedStashRunner.cached_data_iterator[training_str] is None
+
         data_iterator_saved = []
         if not isinstance(model, list) or len(model) == 1:
             assert not isinstance(data_iterator, list) or len(data_iterator) == 1
@@ -1243,6 +1257,7 @@ class PagedStashRunner:
                 else:
                     data_iterator_saved.append(None)
                     data_list.append(None)
+        torch.cuda.nvtx.range_pop()
         return data_iterator_saved, data_list
 
     def check_moe_overflow(self):
@@ -1355,12 +1370,30 @@ class PagedStashRunner:
                 num_tries < 2
             ), f"PagedStashRunner: num_tries {num_tries} exceeded max attempts!!!"
             num_tries += 1
-            data_iterator, data_list = self.data_read(
-                data_iterator, model, training, num_microbatches
-            )
+            training_str = 'training' if training else 'validation'
 
+            read_times = 1
+            from_cpu_cache, to_cpu_cache = False, False
+            saved_data_iterator = None
+            if isinstance(self.forward_backward_func, FullCudaGraphWrapper):
+                if num_tries == 1 and self.forward_backward_func.cuda_graph_data_2buffer_step != -1:
+                    saved_data_iterator = data_iterator
+                    if self.forward_backward_func.curr_iteration[training_str] == self.forward_backward_func.cuda_graph_data_2buffer_step:
+                        read_times = 2
+                    elif self.forward_backward_func.curr_iteration[training_str] > self.forward_backward_func.cuda_graph_data_2buffer_step:
+                        from_cpu_cache = True
+                        data_iterator = None
+
+            data_iterator, data_list = self.data_read(
+                data_iterator, model, training, num_microbatches * read_times, to_cpu_cache, from_cpu_cache
+            )
             kwargs['data_iterator'] = data_list
             result = self.forward_backward_func(*args, **kwargs)
+            if isinstance(self.forward_backward_func, FullCudaGraphWrapper):
+                if num_tries == 1 and self.forward_backward_func.cuda_graph_data_2buffer_step != -1:
+                    if self.forward_backward_func.curr_iteration[training_str] > self.forward_backward_func.cuda_graph_data_2buffer_step:
+                        training_str = 'training' if training else 'validation'
+                        PagedStashRunner.cached_data_iterator[training_str], _ = self.data_read(saved_data_iterator, model, training, num_microbatches, True, False)
 
             stash_overflow_ranks, overbudget_ranks, host_spill_ranks = self.check_moe_overflow()
             # if no overflow, set the expert_rank_capacity_factor to the original value
