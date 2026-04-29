@@ -1083,6 +1083,12 @@ class TransformerConfig(ModelParallelConfig):
     cuda_graph_impl="local" -> "layer" or "block";
     all other cuda_graph_impl values -> "none"."""
 
+    cuda_graph_data_2buffer_step: int = -1
+    """Step to start double buffering data for CUDA graph.
+    If -1, no double buffering will be enabled.
+    If >1, double buffering will be enabled after the specified step.
+    """
+
     cuda_graph_scope: Optional[
         Union[
             str, CudaGraphModule, CudaGraphScope, List[Union[str, CudaGraphModule, CudaGraphScope]]
