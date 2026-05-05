@@ -446,7 +446,7 @@ class P2PCommunicator:
         if self.config.use_symmetric_memory_p2p and len(self.symm_buffers) == 0:
             print (f'!! create_symm_put_wait_buffers tensor_shape: {tensor_shape} num_warmup_microbatches_pp0: {num_warmup_microbatches_pp0}')
             self.symm_buffers['send_next_recv_prev'] = SymmMemBuffer(tensor_shape, self.config.pipeline_dtype, self.pp_group, num_warmup_microbatches_pp0 + 1, self.symm_mem_pool)
-            self.symm_buffers['send_prev_recv_next'] = SymmMemBuffer(tensor_shape, self.config.pipeline_dtype, self.pp_group, 4, self.symm_mem_pool)
+            self.symm_buffers['send_prev_recv_next'] = SymmMemBuffer(tensor_shape, self.config.pipeline_dtype, self.pp_group, num_warmup_microbatches_pp0 + 1, self.symm_mem_pool)
             print (f'!! create_symm_put_wait_buffer done')
 
         for key in self.symm_buffers:
