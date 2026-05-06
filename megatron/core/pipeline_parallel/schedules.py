@@ -2145,7 +2145,7 @@ def forward_backward_pipelining_with_interleaving(
     if hasattr(config, 'cuda_graph_impl') and config.cuda_graph_impl == "local":
         create_cudagraphs()
 
-    if config.use_symmetric_memory_p2p:
+    if config.use_symmetric_memory_p2p and torch.distributed.get_rank() == 0:
         print (f'!! symm_join')
         p2p_communicator.symm_join()
     nvtx_range_pop(suffix="misc")
@@ -2376,7 +2376,6 @@ def forward_backward_pipelining_without_interleaving(
         #print (f'total_num_microbatches: {total_num_microbatches}, num_warmup_microbatches: {num_warmup_microbatches}, num_microbatches_remaining: {num_microbatches_remaining}, are_all_microbatches_in_warmup: {are_all_microbatches_in_warmup}, schedule_table: {schedule_table} order: {order}')
         print (f'self.config.use_symmetric_memory_p2p: {config.use_symmetric_memory_p2p} order: {order}')
         num_warmup_microbatches_pp0 = get_pp_rank0_warmup_microbatches(num_microbatches, 1, config.microbatch_group_size_per_vp_stage, p2p_communicator=p2p_communicator)
-        #print (f'num_warmup_microbatches_pp0: {num_warmup_microbatches_pp0}')
         p2p_communicator.create_symm_put_wait_buffers(send_tensor_shapes[0], num_warmup_microbatches_pp0, num_microbatches)
     # Input, output tensors only need to be saved when doing backward passes
     input_tensors = None
