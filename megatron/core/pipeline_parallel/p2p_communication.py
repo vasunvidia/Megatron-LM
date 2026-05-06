@@ -146,6 +146,8 @@ class P2PCommunicator:
     tensor exchanges between consecutive stages in the pipeline.
     """
 
+    # static variable to store the symmetric memory buffers
+    symm_buffers = {}
     def __init__(self, pp_group: dist.ProcessGroup, config: ModelParallelConfig):
         # Basic attrs
         self.pp_group = pp_group
@@ -168,7 +170,6 @@ class P2PCommunicator:
             else None
         )
         self.symm_mem_pool = None
-        self.symm_buffers = {}
         if config.use_symmetric_memory_p2p:
             assert not config.variable_seq_lengths, "symmetric memory p2p is not supported with variable sequence lengths"
             symm_mem.set_backend("NCCL")
@@ -362,7 +363,7 @@ class P2PCommunicator:
                     "Common tensor_shape is (seq_length, micro_batch_size, hidden_size)"
                 )
             if config.use_symmetric_memory_p2p:
-                tensor_recv_prev_func = self.symm_buffers['send_next_recv_prev'].get_recv_buffer
+                tensor_recv_prev_func = P2PCommunicator.symm_buffers['send_next_recv_prev'].get_recv_buffer
             else:
                 tensor_recv_prev_func = create_tensor_recv_prev
 
@@ -375,7 +376,7 @@ class P2PCommunicator:
                     "Common tensor_shape is (seq_length, micro_batch_size, hidden_size)"
                 )
             if config.use_symmetric_memory_p2p:
-                tensor_recv_next_func = self.symm_buffers['send_prev_recv_next'].get_recv_buffer
+                tensor_recv_next_func = P2PCommunicator.symm_buffers['send_prev_recv_next'].get_recv_buffer
             else:
                 tensor_recv_next_func = create_tensor_recv_next
 
@@ -418,7 +419,7 @@ class P2PCommunicator:
             tensor_recv_prev=tensor_recv_prev,
             tensor_send_next=tensor_send_next,
             tensor_recv_next=tensor_recv_next,
-            symm_buffers=self.symm_buffers,
+            symm_buffers=P2PCommunicator.symm_buffers,
             group=pp_group,
             prev_pipeline_rank=prev_rank,
             next_pipeline_rank=next_rank,
@@ -443,18 +444,18 @@ class P2PCommunicator:
     def create_symm_put_wait_buffers(self, tensor_shape, num_warmup_microbatches_pp0, num_microbatches):
         assert tensor_shape is not None or tensor_input is not None, "either tensor_shape or tensor_input must be provided"
         
-        if self.config.use_symmetric_memory_p2p and len(self.symm_buffers) == 0:
+        if self.config.use_symmetric_memory_p2p and len(P2PCommunicator.symm_buffers) == 0:
             print (f'!! create_symm_put_wait_buffers tensor_shape: {tensor_shape} num_warmup_microbatches_pp0: {num_warmup_microbatches_pp0}')
-            self.symm_buffers['send_next_recv_prev'] = SymmMemBuffer(tensor_shape, self.config.pipeline_dtype, self.pp_group, num_warmup_microbatches_pp0 + 1, self.symm_mem_pool)
-            self.symm_buffers['send_prev_recv_next'] = SymmMemBuffer(tensor_shape, self.config.pipeline_dtype, self.pp_group, num_warmup_microbatches_pp0 + 1, self.symm_mem_pool)
+            P2PCommunicator.symm_buffers['send_next_recv_prev'] = SymmMemBuffer(tensor_shape, self.config.pipeline_dtype, self.pp_group, num_warmup_microbatches_pp0 + 1, self.symm_mem_pool)
+            P2PCommunicator.symm_buffers['send_prev_recv_next'] = SymmMemBuffer(tensor_shape, self.config.pipeline_dtype, self.pp_group, num_warmup_microbatches_pp0 + 1, self.symm_mem_pool)
             print (f'!! create_symm_put_wait_buffer done')
 
-        for key in self.symm_buffers:
-            self.symm_buffers[key].reset()
+        for key in P2PCommunicator.symm_buffers:
+            P2PCommunicator.symm_buffers[key].reset()
 
     def symm_join(self):
-        for key in self.symm_buffers:
-            self.symm_buffers[key].join()
+        for key in P2PCommunicator.symm_buffers:
+            P2PCommunicator.symm_buffers[key].join()
 
     @nvtx_decorator()
     def recv_forward(
