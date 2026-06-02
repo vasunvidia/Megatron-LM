@@ -66,24 +66,32 @@ class SymmWaitBuffer:
         self.buffer.requires_grad = True
         self.hdl = symm_mem.rendezvous(self.buffer, group=pp_group)
         self.stream = stream
+        # Pre-allocate a PERSISTENT gradient buffer once and bind it as the leaf's .grad. Autograd
+        # accumulates in-place into an existing leaf .grad, so the gradient storage address stays
+        # stable across iterations. Letting autograd lazily realloc .grad each iter makes a
+        # full-iteration CUDA graph captured during warmup bake in a .grad address that is
+        # freed/moved before the real loop -> graph replay writes to a stale address -> illegal
+        # memory access.
+        self.grad_buffer = torch.zeros(shape, dtype=dtype, device=torch.cuda.current_device())
+        self.buffer.grad = self.grad_buffer
     def get_hdl(self):
         return self.hdl
     def get_buffer(self):
         self.buffer = self.buffer.detach()
         self.buffer.requires_grad = True
-        if self.buffer.grad is not None:
-            self.buffer.grad.zero_()
+        # Re-bind the persistent grad buffer (detach() drops .grad) and zero in-place so the
+        # captured graph always reads/writes the same storage.
+        self.buffer.grad = self.grad_buffer
+        self.grad_buffer.zero_()
         return self.buffer
     def wait_signal(self, recv_from_rank):
         with torch.cuda.stream(self.stream):
             symm_mem.wait_signal(self.hdl, recv_from_rank)
-            if self.buffer.grad is not None:
-                self.buffer.grad.zero_()
+            self.grad_buffer.zero_()
     def wait(self):
         torch.cuda.current_stream().wait_stream(self.stream)
     def reset(self):
-        if self.buffer.grad is not None:
-            self.buffer.grad.zero_()
+        self.grad_buffer.zero_()
     
 class SymmMemBuffer:
     def __init__(self, shape, dtype, pp_group, num_warmup_microbatches_pp0, sym_mem_pool):
