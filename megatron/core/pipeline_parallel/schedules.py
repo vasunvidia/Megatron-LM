@@ -2147,8 +2147,9 @@ def forward_backward_pipelining_with_interleaving(
     if hasattr(config, 'cuda_graph_impl') and config.cuda_graph_impl == "local":
         create_cudagraphs()
 
-    if config.use_symmetric_memory_p2p and torch.distributed.get_rank() == 0:
-        print (f'!! symm_join')
+    if config.use_symmetric_memory_p2p:
+        if torch.distributed.get_rank() == 0:
+            print (f'!! symm_join')
         p2p_communicator.symm_join()
     nvtx_range_pop(suffix="misc")
 
