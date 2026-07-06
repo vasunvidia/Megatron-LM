@@ -2128,6 +2128,8 @@ def forward_backward_pipelining_with_interleaving(
         not recv_next_wait_handles
     ), 'recv_next_wait_handles should be cleared at the end of a step'
 
+    if getattr(config, "moe_paged_stash", False):
+        paged_stash_reset(enabled=not forward_only, config=config)
     if config.finalize_model_grads_func is not None and not forward_only:
 
         # If defer_embedding_wgrad_compute is enabled we need to do the

@@ -87,12 +87,20 @@ class SymmWaitBuffer:
     def wait_signal(self, recv_from_rank):
         with torch.cuda.stream(self.stream):
             symm_mem.wait_signal(self.hdl, recv_from_rank)
-            self.grad_buffer.zero_()
+            # grad_buffer is already zeroed by get_buffer(), which _communicate() calls on this
+            # same SymmWaitBuffer immediately before this wait (recv_index/wait_index advance in
+            # lockstep), on the compute stream and before the microbatch's backward accumulates
+            # into .grad. Re-zeroing here is redundant; dropped to remove a per-recv kernel
+            # launch from the host critical path (lowers eager-mode rank skew at collectives).
     def wait(self):
         torch.cuda.current_stream().wait_stream(self.stream)
     def reset(self):
-        self.grad_buffer.zero_()
-    
+        # grad_buffer zeroing is handled per-recv in get_buffer() (compute stream, before each
+        # microbatch's backward accumulates into .grad), so this iteration-boundary zero was
+        # redundant. Dropped to remove ~num_recv_buffers kernel launches per iteration from the
+        # host path. Kept as a no-op for SymmMemBuffer.reset()'s loop / API stability.
+        return
+
 class SymmMemBuffer:
     def __init__(self, shape, dtype, pp_group, num_warmup_microbatches_pp0, sym_mem_pool):
         self.shape = shape
