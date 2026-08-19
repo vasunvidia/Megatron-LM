@@ -509,7 +509,7 @@ class _GDNBase(MegatronModule):
                 )
             elif name == "core_attention":
                 # Skip core_attention
-                pass
+                continue
             else:
                 module_sharded_sd = sharded_state_dict_default(
                     module, f"{prefix}{name}.", sharded_offsets, metadata, tp_group=tp_group
