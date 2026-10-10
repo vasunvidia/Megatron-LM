@@ -316,6 +316,10 @@ class _ParamAndGradBucketGroup:
         self.param_gather_handle = None
         self.param_gather_dispatched = False
         self.grad_reduce_handle = None
+        # Set by DDP when zero_grads_after_reduce_scatter is on; None leaves the reference path.
+        self.post_rs_zero_stream = None
+        # Pinned buffer of zeros for the H2D fill path; None means fill with zero_().
+        self.post_rs_zero_host_buffer = None
         # Per-iteration flag: True once finish_grad_sync has run this step. Lets a successor
         # bucket group early-drain its predecessor without the end-of-step finalize loop
         # double-waiting. Reset by `reset()`.
@@ -844,6 +848,93 @@ class _ParamAndGradBucketGroup:
             # maintain consistency with prior code, we need to manually set communication handle to
             # None.
             self.grad_reduce_handle = None
+
+        if self.post_rs_zero_stream is not None:
+            self.zero_dead_grads_after_reduce_scatter(
+                force_all_reduce=bool(force_all_reduce), stream=self.post_rs_zero_stream
+            )
+
+    def dead_grad_ranges(self, bucket) -> List[Tuple[int, int]]:
+        """The regions of `bucket.grad_data` the reduce-scatter has consumed.
+
+        `shard_buffer` splits the bucket into equal contiguous chunks and the collective writes
+        only this rank's, so the consumed region is the (at most two) slices around it.
+        Divisibility is the guarantee `shard_buffer` already asserts on this exact tensor.
+        """
+        numel = bucket.grad_data.numel()
+        shard_size = numel // self.intra_distributed_optimizer_instance_size
+        shard_start = self.intra_distributed_optimizer_instance_rank * shard_size
+        return [(0, shard_start), (shard_start + shard_size, numel)]
+
+    def _post_rs_path_active(self, force_all_reduce: bool) -> bool:
+        """Whether this bucket group just took the plain reduce-scatter path.
+
+        An all-reduce leaves the whole bucket live, and with several optimizer instances the
+        inter-instance all-reduce reads the shard again afterwards.
+        """
+        return (
+            self.ddp_config.use_distributed_optimizer
+            and not force_all_reduce
+            and self.ddp_config.num_distributed_optimizer_instances == 1
+        )
+
+    def _clear_post_rs_markers(self) -> None:
+        """Make reset() zero these buckets whole again."""
+        for bucket in self.buckets:
+            bucket.post_rs_live_range = None
+
+    def _post_rs_fill_zero(self, destination: torch.Tensor) -> None:
+        """Zero `destination` on the current stream, by DMA copy if a pinned source is set.
+
+        `zero_()` runs on the SMs and so competes with the backward these fills hide behind; a
+        copy from page-locked memory runs on the DMA engines instead. The uint8 buffer is
+        reinterpreted as the gradient dtype (exact, being a whole number of MiB) and repeated to
+        cover larger regions. Page-locked plus `non_blocking` is what keeps this a plain
+        `cudaMemcpyAsync`; a pageable source would force a synchronization and break capture.
+        """
+        source = self.post_rs_zero_host_buffer
+        if source is None:
+            destination.zero_()
+            return
+        chunk = source.view(destination.dtype)
+        offset, numel = 0, destination.numel()
+        while offset < numel:
+            count = min(chunk.numel(), numel - offset)
+            destination[offset : offset + count].copy_(chunk[:count], non_blocking=True)
+            offset += count
+
+    def zero_dead_grads_after_reduce_scatter(self, force_all_reduce: bool, stream) -> None:
+        """Zero the reduce-scattered-away regions on `stream` (zero_grads_after_reduce_scatter).
+
+        Called at *dispatch* time so each bucket's zeroing starts as its own reduce-scatter
+        retires and spreads through the backward; doing it at `finish_grad_sync` would bunch them
+        all at the end, with no compute left to hide behind. Marks each bucket with the slice it
+        did *not* zero, for `_ParamAndGradBuffer.reset` to finish; failure drops the markers.
+        """
+        if not self._post_rs_path_active(force_all_reduce) or self.grad_reduce_handle is None:
+            self._clear_post_rs_markers()
+            return
+        try:
+            with torch.cuda.stream(stream):
+                # Orders this side stream after the collective without touching the compute
+                # stream. finish_grad_sync() waits the same handle again later for the compute
+                # stream; for NCCL that is another stream-wait on the same event.
+                self.grad_reduce_handle.wait()
+                for bucket in self.buckets:
+                    for start_index, end_index in self.dead_grad_ranges(bucket):
+                        if end_index > start_index:
+                            self._post_rs_fill_zero(bucket.grad_data[start_index:end_index])
+                    numel = bucket.grad_data.numel()
+                    shard_size = numel // self.intra_distributed_optimizer_instance_size
+                    shard_start = self.intra_distributed_optimizer_instance_rank * shard_size
+                    bucket.post_rs_live_range = (shard_start, shard_start + shard_size)
+        except Exception as exc:  # noqa: BLE001 - degrade to the reference zeroing, never corrupt
+            self._clear_post_rs_markers()
+            logger.warning(
+                'post-RS gradient zeroing failed (%r); falling back to zeroing the whole '
+                'gradient buffer in zero_grad_buffer()',
+                exc,
+            )
 
     def finish_grad_sync(self, force_all_reduce: Optional[bool] = False):
         """
@@ -1683,8 +1774,17 @@ class _ParamAndGradBuffer:
     def reset(self):
         """
         Zero out the underlying grad_buffer.
+
+        With zero_grads_after_reduce_scatter a bucket carries the slice its reduce-scatter left
+        live, and only that slice is zeroed here. Without the marker -- the all-reduce path, or
+        the first iteration -- the bucket is zeroed whole.
         """
-        self.grad_data.zero_()
+        for bucket in self.buckets:
+            live_range = getattr(bucket, 'post_rs_live_range', None)
+            if live_range is None:
+                bucket.grad_data.zero_()
+            else:
+                bucket.grad_data[live_range[0] : live_range[1]].zero_()
         for grad in self.extra_main_grads:
             grad.zero_()
 

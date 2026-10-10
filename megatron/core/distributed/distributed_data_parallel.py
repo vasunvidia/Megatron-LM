@@ -382,6 +382,60 @@ class DistributedDataParallel(_BaseDataParallel):
             ),
         )
 
+        # zero_grads_after_reduce_scatter: one side stream shared by every bucket group. Forked in
+        # _ParamAndGradBucketGroup.start_grad_sync and joined in this class's finish_grad_sync, so
+        # both ends sit inside whatever CUDA-graph capture the backward is part of.
+        self.post_rs_zero_stream = None
+        if self.ddp_config.zero_grads_after_reduce_scatter:
+            assert self.ddp_config.use_distributed_optimizer, (
+                "zero_grads_after_reduce_scatter needs the distributed optimizer: without a "
+                "reduce-scatter nothing in the gradient buffer is consumed early."
+            )
+            assert self.ddp_config.overlap_grad_reduce, (
+                "zero_grads_after_reduce_scatter needs overlap_grad_reduce, otherwise the "
+                "collectives all land at the end of the backward and there is nothing to hide "
+                "the zeroing behind."
+            )
+            self.post_rs_zero_stream = torch.cuda.Stream()
+
+            # Optional pinned host-zero buffer for grad zeroing, to use H2D copies (not zero_()) for efficiency.
+            # Allocated ahead of CUDA-graph capture, serves all buckets, held for DDP lifetime.
+            self.post_rs_zero_host_buffer = None
+            chunk_mib = self.ddp_config.zero_grads_after_rs_host_copy_mib
+            if chunk_mib > 0:
+                try:
+                    self.post_rs_zero_host_buffer = torch.zeros(
+                        chunk_mib << 20, dtype=torch.uint8, pin_memory=True
+                    )
+                except Exception as exc:  # noqa: BLE001 - fall back to zero_(), never fail here
+                    log_single_rank(
+                        logger,
+                        logging.WARNING,
+                        f'post-RS grad zeroing: could not pin a {chunk_mib} MiB host buffer '
+                        f'({exc!r}); falling back to zero_()',
+                    )
+            for bucket_groups in [self.bucket_groups, self.expert_parallel_bucket_groups]:
+                for i, bucket_group in enumerate(bucket_groups):
+                    bucket_group.post_rs_zero_stream = self.post_rs_zero_stream
+
+                    # Last grad-reduce gets fastest fill: use zero_() for it, host copy for others.
+                    # zero_() is best when no compute remains to hide bandwidth usage.
+                    is_last_to_dispatch = i == len(bucket_groups) - 1
+                    bucket_group.post_rs_zero_host_buffer = (
+                        None if is_last_to_dispatch else self.post_rs_zero_host_buffer
+                    )
+            fill_kind = (
+                f'{chunk_mib} MiB pinned H2D copies, zero_() for the last bucket group'
+                if self.post_rs_zero_host_buffer is not None
+                else 'zero_()'
+            )
+            log_single_rank(
+                logger,
+                logging.INFO,
+                f'post-RS grad zeroing: {fill_kind} over '
+                f'{len(self.bucket_groups)} bucket group(s)',
+            )
+
         if self.ddp_config.num_distributed_optimizer_instances > 1:
             assert (
                 self.ddp_config.use_distributed_optimizer
@@ -704,6 +758,9 @@ class DistributedDataParallel(_BaseDataParallel):
         """
         for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
             bucket_group.finish_grad_sync(force_all_reduce=force_all_reduce)
+        if self.post_rs_zero_stream is not None:
+            # Join the side stream before backward ends to keep the fork contained in the capture.
+            torch.cuda.current_stream().wait_stream(self.post_rs_zero_stream)
 
     def free_overlap_buffers(self):
         """Free overlap param-gather GPU buffers across all bucket groups."""

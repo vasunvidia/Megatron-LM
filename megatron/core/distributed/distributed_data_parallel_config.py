@@ -49,6 +49,18 @@ class DistributedDataParallelConfig:
     check_for_large_grads: bool = False
     """If true, check for unexpectedly large gradients _before_ communication collective."""
 
+    zero_grads_after_reduce_scatter: bool = False
+    """If true, zero each bucket's reduce-scattered-away gradients on a side stream during the
+    backward, leaving only this rank's shard (1/DP of the buffer) for zero_grad_buffer(). Changes
+    only when the zeroing happens, never whether gradients accumulate. Requires the distributed
+    optimizer, a single optimizer instance and overlap_grad_reduce. Defaults to False."""
+
+    zero_grads_after_rs_host_copy_mib: int = 0
+    """Chunk size, in MiB, for doing the zero_grads_after_reduce_scatter fills as host-to-device
+    copies from a pinned buffer of zeros, which run on the DMA engines and cost no SMs, rather
+    than as `zero_()`. Larger is better for DMA efficiency and copy count, at the price of pinned
+    host memory. 0 (the default) keeps `zero_()`, as does a failed allocation."""
+
     bucket_size: Optional[int] = None
     """Maximum number of parameters in each bucket. If unspecified, MCore uses a default
        value of max(40000000, 1000000 * dp_size) parameters (larger DP sizes need larger
